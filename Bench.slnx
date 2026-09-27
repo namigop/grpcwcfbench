@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Bench.Client/Bench.Client.csproj" />
+  <Project Path="Bench.Server\Bench.Server.csproj" />
+</Solution>

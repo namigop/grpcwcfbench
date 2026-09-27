@@ -1,0 +1,61 @@
+syntax = "proto3";
+import "google/protobuf/timestamp.proto";
+
+package northwind;
+
+option go_package = "northwind/proto";
+
+// Main service definition for Northwind operations
+service NorthwindService {
+  // GetOrderById retrieves a single order by its ID
+  rpc GetOrderById(OrderRequest) returns (Order) {}
+ 
+}
+
+// Request/Response messages
+message OrderRequest {
+  int32 order_id = 1;
+}
+  
+// Entity messages
+message Order {
+  int32 order_id = 1;
+  int32 customer_id = 2;
+  int32 employee_id = 3;
+  google.protobuf.Timestamp  order_date = 4;
+  google.protobuf.Timestamp  required_date = 5;
+  google.protobuf.Timestamp  shipped_date = 6;
+  int32 ship_via = 7;
+  double freight = 8;
+  string ship_name = 9;
+  string ship_address = 10;
+  string ship_city = 11;
+  string ship_region = 12;
+  string ship_postal_code = 13;
+  string ship_country = 14;
+  string status = 15;
+  repeated OrderDetail order_details = 16;
+  Customer customer = 17;
+}
+
+message OrderDetail {
+  int32 order_id = 1;
+  int32 product_id = 2;
+  double unit_price = 3;
+  int32 quantity = 4;
+  double discount = 5;
+}
+
+message Customer {
+  int32 customer_id = 1;
+  string company_name = 2;
+  string contact_name = 3;
+  string contact_title = 4;
+  string address = 5;
+  string city = 6;
+  string region = 7;
+  string postal_code = 8;
+  string country = 9;
+  string phone = 10;
+  string fax = 11;
+}
