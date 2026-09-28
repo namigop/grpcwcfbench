@@ -1,4 +1,5 @@
 using Bench.wcf.DataContracts;
+using CoreWCF;
 
 namespace Bench.wcf;
 
@@ -8,7 +9,9 @@ public class NorthwindWcfService : INorthwindService {
     }
 }
 
+[ServiceContract]
 public interface INorthwindService {
 
-    Order GetOrderById(OrderRequest request);
+    [OperationContract]
+    public Order GetOrderById(OrderRequest request);
 }
