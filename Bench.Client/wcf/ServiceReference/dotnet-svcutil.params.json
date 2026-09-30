@@ -1,0 +1,22 @@
+{
+  "providerId": "Microsoft.Tools.ServiceModel.Svcutil",
+  "version": "8.0.0",
+  "options": {
+    "inputs": [
+      "http://localhost:5000/NorthwindWcfService/basic?wsdl"
+    ],
+    "collectionTypes": [
+      "System.Collections.Generic.List`1"
+    ],
+    "namespaceMappings": [
+      "http://tempuri.org/, Bench.Client.Wcf"
+    ],
+    "outputFile": "NorthwindServiceClient.cs",
+    "references": [
+      "/Users/erikaraojo/Work/Source/grpcwcfbench/Bench.Client/Bench.Client.csproj"
+    ],
+    "serializerMode": "DataContractSerializer",
+    "targetFramework": "net10.0",
+    "typeReuseMode": "Specified"
+  }
+}

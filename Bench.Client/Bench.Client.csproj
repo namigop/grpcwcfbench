@@ -1,4 +1,5 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -8,9 +9,12 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <Content Include="..\Bench.Server\grpc\proto\Northwind.proto">
+      <!-- Proto is compiled (not just copied) so the gRPC client (Northwind.NorthwindService.NorthwindServiceClient) is generated. -->
+      <None Remove="..\Bench.Server\grpc\proto\Northwind.proto" />
+      <Protobuf Include="..\Bench.Server\grpc\proto\Northwind.proto">
         <Link>gRPC\Northwind.proto</Link>
-      </Content>
+        <Generator>MSBuild:Compile</Generator>
+      </Protobuf>
     </ItemGroup>
 
     <ItemGroup>
@@ -29,13 +33,23 @@
     </ItemGroup>
 
     <ItemGroup>
+      <!-- WCF client proxy generated from http://localhost:5000/NorthwindWcfService/basic?wsdl via dotnet-svcutil. -->
+      <!-- NorthwindServiceClient.cs is auto-included by the SDK (project dir). Params file tracked so regeneration is reproducible. -->
+      <!-- Regenerate with: dotnet-svcutil http://localhost:5000/NorthwindWcfService/basic?wsdl -d wcf/ServiceReference -n 'http://tempuri.org/,Bench.Client.Wcf' -ct System.Collections.Generic.List`1 -ser DataContractSerializer -r Bench.Client.csproj -->
+      <None Include="wcf\ServiceReference\dotnet-svcutil.params.json" />
+    </ItemGroup>
+
+    <ItemGroup>
       <PackageReference Include="CoreWCF.Http" Version="1.9.1" />
       <PackageReference Include="CoreWCF.NetTcp" Version="1.9.1" />
+      <PackageReference Include="Google.Protobuf" Version="3.36.2" />
       <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
       <PackageReference Include="Grpc.Tools" Version="2.84.0">
         <PrivateAssets>all</PrivateAssets>
         <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       </PackageReference>
+      <PackageReference Include="System.ServiceModel.Http" Version="10.0.652802" />
+      <PackageReference Include="System.ServiceModel.NetTcp" Version="10.0.652802" />
     </ItemGroup>
 
 </Project>
