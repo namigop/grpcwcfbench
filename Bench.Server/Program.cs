@@ -86,9 +86,6 @@ async Task<int> RunWcfAsync() {
     ((IApplicationBuilder)app).UseServiceModel(option => {
         option
             .AddService<NorthwindWcfService>(serviceOptions => {
-                // CoreWCF resolves relative endpoint addresses against these base addresses per binding scheme.
-                // UseNetTcp only registers the net.tcp scheme, so we explicitly add http/https for CoreWCF endpoint resolution.
-                // net.tcp base address is already registered by UseNetTcp(5002).
                 serviceOptions.BaseAddresses.Add(new Uri("http://localhost:5000/"));
                 serviceOptions.BaseAddresses.Add(new Uri("https://localhost:5001/"));
             })
