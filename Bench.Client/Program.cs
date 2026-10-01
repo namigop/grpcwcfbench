@@ -94,7 +94,7 @@ async Task<int> RunWcfAsync(WcfTransport transport) {
             WcfTransport.NetTcp => "net.tcp://localhost:5002/NorthwindWcfService/nettcp",
             _ => throw new ArgumentOutOfRangeException(nameof(transport), transport, null)
         };
-        return new Args(address, 1, TimeSpan.FromSeconds(180), TimeSpan.FromSeconds(30));
+        return new Args(address, 1, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(30));
     }
 
     var args = CreateArgs();

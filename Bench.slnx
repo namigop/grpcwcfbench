@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/doc/">
+    <File Path="README.md" />
+  </Folder>
   <Project Path="Bench.Client/Bench.Client.csproj" />
   <Project Path="Bench.Server\Bench.Server.csproj" />
 </Solution>

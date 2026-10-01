@@ -28,7 +28,6 @@ public static class Harness {
                          p90   : {Percentile(r.Latencies, 90):F3}
                          p95   : {Percentile(r.Latencies, 95):F3}
                          p99   : {Percentile(r.Latencies, 99):F3}
-                         p99.9 : {Percentile(r.Latencies, 99.9):F3}
                          max   : {r.Latencies[^1]:F3}
                       """;
         return report;
@@ -41,6 +40,7 @@ public static class Harness {
 
         var sw = Stopwatch.StartNew();
         var end = args.Duration;
+        
         var workers = Enumerable.Range(0, args.Concurrency).Select(id => Task.Run(async () => {
             var list = new List<double>();
             latencies[id] = list;
@@ -53,7 +53,7 @@ public static class Harness {
                     if (record)
                         list.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
                 }
-                catch (Exception) {
+                catch (Exception exc) {
                     errors[id]++;
                 }
             }
