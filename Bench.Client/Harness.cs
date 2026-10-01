@@ -15,6 +15,18 @@ public static class Harness {
     }
 
     public static string CreateReport(BenchResult r) {
+        // Every call can fail (e.g. the server is not running), leaving no samples to report.
+        // Say so plainly instead of throwing IndexOutOfRange and hiding the real cause.
+        if (r.Latencies.Length == 0) {
+            return $"""
+                    ================ Results ================
+                    Elapsed      : {r.Elapsed.TotalSeconds:F2}s
+                    Successful   : 0
+                    Failed       : {r.Errors:N0}
+                    No successful calls, so there is no latency to report.
+                    """;
+        }
+
         var report = $"""
                       ================ Results ================
                       Elapsed      : {r.Elapsed.TotalSeconds:F2}s
