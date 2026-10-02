@@ -1,10 +1,5 @@
 ﻿using System.Diagnostics;
-using System.ServiceModel;
-using System.Text.Json;
-using System.Xml;
 using Bench.Client;
-using Bench.Client.Wcf;
-using Bench.wcf.DataContracts;
 
 namespace Bench;
 
@@ -15,8 +10,6 @@ public static class Harness {
     }
 
     public static string CreateReport(BenchResult r) {
-        // Every call can fail (e.g. the server is not running), leaving no samples to report.
-        // Say so plainly instead of throwing IndexOutOfRange and hiding the real cause.
         if (r.Latencies.Length == 0) {
             return $"""
                     ================ Results ================
@@ -46,6 +39,9 @@ public static class Harness {
     }
 
     public static async Task<BenchResult> Run(Args args, Func<int, CancellationToken, Task> call, bool record) {
+       
+        
+        
         using var cts = new CancellationTokenSource();
         var latencies = new List<double>[args.Concurrency]; // per-worker => no lock contention
         var errors = new int[args.Concurrency];
@@ -53,23 +49,10 @@ public static class Harness {
         var sw = Stopwatch.StartNew();
         var end = args.Duration;
         
-        var workers = Enumerable.Range(0, args.Concurrency).Select(id => Task.Run(async () => {
-            var list = new List<double>();
-            latencies[id] = list;
-
-            //make the call as soon as the previous one completes.
-            while (sw.Elapsed < end) {
-                long start = Stopwatch.GetTimestamp();
-                try {
-                    await call(id, CancellationToken.None);
-                    if (record)
-                        list.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
-                }
-                catch (Exception exc) {
-                    errors[id]++;
-                }
-            }
-        })).ToArray();
+        var workers = Enumerable.Range(0, args.Concurrency)
+            //Select(id => Task.Factory.StartNew(async () => await Loop(id), TaskCreationOptions.LongRunning))
+            .Select(id => Task.Run(async () => await Loop(id)))
+            .ToArray();
 
         await Task.WhenAll(workers);
         sw.Stop();
@@ -77,5 +60,25 @@ public static class Harness {
         var all = latencies.SelectMany(l => l).ToArray();
         Array.Sort(all);
         return new BenchResult(all, errors.Sum(), sw.Elapsed);
+        
+        async Task Loop(int id) {
+            {
+                var list = new List<double>();
+                latencies[id] = list;
+
+                //make the call as soon as the previous one completes.
+                while (sw.Elapsed < end) {
+                    long start = Stopwatch.GetTimestamp();
+                    try {
+                        await call(id, CancellationToken.None);
+                        if (record)
+                            list.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+                    }
+                    catch (Exception exc) {
+                        errors[id]++;
+                    }
+                }
+            }
+        }
     }
 }
