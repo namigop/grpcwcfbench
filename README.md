@@ -1,121 +1,139 @@
-# grpcwcfbench
+# WCF vs gRPC Benchmark
 
 Micro-benchmark comparing **WCF (CoreWCF) over three transports** against **gRPC** for a
-single `GetOrderById` round-trip, on .NET 10 / C#.
+single `GetOrderById` unary method, on .NET 10 / C#.
 
-Transports compared:
+This benchmark was done as a fun excercise. Be aware of the following caveats
+- Both client and server were ran on the same machine.
+- The response of the `GetOrderById` method is hardcoded.  There is no additional logic apart from just returning an `Order` instance
+- No finetuning was done on the gRPC or WCF servers
+- The duration of the benchmark is just 60 sec (with a 10 sec warmup time)
+
+## Transports compared
 
 | Target | Transport | Endpoint |
 |---|---|---|
-| `wcf` `basichttp` | CoreWCF `BasicHttpBinding` (SOAP 1.1 / text XML over HTTP) | `http://localhost:5000/NorthwindWcfService/basic` |
+| `wcf` `basichttp` | CoreWCF `BasicHttpBinding` (SOAP 1.1) | `http://localhost:5000/NorthwindWcfService/basic` |
 | `wcf` `wshttp` | CoreWCF `WSHttpBinding` (SOAP 1.2 over HTTPS) | `https://localhost:5001/NorthwindWcfService/ws` |
-| `wcf` `nettcp` | CoreWCF `NetTcpBinding` (binary framing over raw TCP) | `net.tcp://localhost:5002/NorthwindWcfService/nettcp` |
-| `grpc` | gRPC over HTTP/2 (h2c) | `http://localhost:5003` |
+| `wcf` `nettcp` | CoreWCF `NetTcpBinding` (binary over raw TCP) | `net.tcp://localhost:5002/NorthwindWcfService/nettcp` |
+| `grpc` | gRPC over HTTP/2 | `http://localhost:5003` |
 
-## Results
-
-Warmup 30s, measurement 60s, concurrency 1 / 10 / 100. **Zero failed calls in all 12 runs**
-(~28.4M successful requests total). Latency in milliseconds.
-
-| Transport | Conc. | Throughput | p50 | p90 | p95 | p99 | mean | max |
-|---|---|---|---|---|---|---|---|---|
-| `nettcp`  | 1   | **21,862 req/s** | 0.041 | 0.059 | 0.066 | **0.088** | 0.046 | 150.6 |
-| `grpc`    | 1   | 16,125 req/s | 0.060 | 0.080 | 0.087 | 0.106 | 0.062 | 20.8 |
-| `basichttp`| 1   | 16,044 req/s | 0.055 | 0.079 | 0.100 | 0.159 | 0.062 | 7.6 |
-| `wshttp`  | 1   | 14,276 req/s | 0.062 | 0.081 | 0.095 | 0.153 | 0.070 | 265.6 |
-| `grpc`    | 10  | **95,827 req/s** | 0.094 | 0.119 | 0.130 | 0.572 | 0.104 | 7.7 |
-| `nettcp`  | 10  | 82,153 req/s | 0.101 | 0.130 | 0.152 | 0.707 | 0.122 | 527.3 |
-| `basichttp`| 10  | 63,819 req/s | 0.121 | 0.154 | 0.180 | 1.030 | 0.157 | 349.6 |
-| `wshttp`  | 10  | 53,633 req/s | 0.143 | 0.198 | 0.278 | 1.157 | 0.186 | 20.7 |
-| `nettcp`  | 100 | **80,768 req/s** | 1.048 | 2.136 | 2.399 | **3.243** | 1.238 | 13.1 |
-| `basichttp`| 100 | 62,231 req/s | 1.147 | 2.965 | 3.492 | 5.229 | 1.607 | 19.4 |
-| `grpc`    | 100 | 55,887 req/s | 2.016 | 2.898 | 3.300 | 4.080 | 1.789 | 11.1 |
-| `wshttp`  | 100 | 50,100 req/s | 1.396 | 3.815 | 4.540 | 6.212 | 1.996 | 33.0 |
-
-### What the numbers say
-
-**NetTcpBinding wins at every concurrency level** except `-c 10`, and it has the tightest tail
-throughout — best p50 *and* best p99 at both 1 and 100. Binary framing over a raw TCP socket
-avoids the XML serialisation and HTTP header work the other three pay on every message.
-
-**gRPC is the most concurrency-sensitive.** It scales best from 1 to 10 (5.9x, vs ~3.8-4.0x for
-WCF) but degrades hardest from 10 to 100, dropping 42% (95,827 → 55,887) while NetTcp and
-BasicHttp stay flat. This is the cost of the shared-channel model: all 100 workers multiplex
-over one HTTP/2 connection, so they contend on a single flow-control window. WCF's one-client-per-
-worker model spreads load across 100 independent sockets, which is why it holds up better at
-`-c 100` — at the cost of never getting the 10-worker win.
-
-**Every transport saturates between `-c 10` and `-c 100`.** Throughput is flat or declining at
-100 while p50 inflates ~10x. By that point the bottleneck is the single server process, not the
-transport. Treat the `-c 100` row as a measure of queueing delay under overload rather than of
-transport capability.
-
-**WSHttpBinding is consistently last.** The extra SOAP 1.2 / WS-Addressing envelope plus TLS
-shows up as both the lowest throughput and the worst p99 at 1, 10 and 100.
-
-### Reading the `max` column
-
-Treat `max` as noise. Several runs show outliers two to three orders of magnitude above their own
-p99 (nettcp c=10: 527ms vs p99 0.707ms; wshttp c=1: 265ms vs p99 0.153ms). These are almost
-certainly GC pauses and thread-pool stalls on the client, not transport behaviour — a genuine
-network stall would show up in p99 too. **Use p50/p95/p99 for comparison and ignore `max`.**
-
-## Caveats
-
-- **Client and server share one machine** (loopback). These numbers measure framework and
-  transport overhead with no real network in the path. They say nothing about behaviour over a
-  LAN or WAN, where NetTcp's and HTTP's connection-setup costs and TLS costs would change
-  relative ranking.
-- **The service is a stub.** `NorthwindWcfService.GetOrderById` returns a fresh empty `Order`,
-  and `NorthwindGrpcService` likewise — no database, no business logic. The payload is tiny, so
-  what is being measured is almost entirely serialisation and transport cost. That is the right
-  shape for a framework comparison, but it means the absolute numbers are far below what a real
-  data-backed service would show.
-- **One server process, default thread pool.** The saturation at `-c 10`+ is a property of this
-  configuration. Running the server across multiple instances, or tuning Kestrel/CoreWCF limits,
-  would move the ceiling.
-- **A single un-replicated trial per configuration.** No confidence intervals; treat small
-  differences (under ~5%) as noise. The gaps between transports are far larger than that.
 
 ## Environment
 
-- macOS 26.5.2 (build 25F84), Apple M4, 10 cores, 32 GB
-- .NET SDK 10.0.100, `net10.0`, Debug build
+- macOS 26.5.2, Apple M4, 10 cores, 32 GB
+- .NET SDK 10.0.100, `net10.0`
 - CoreWCF 1.9.1, gRPC 2.84.0, `System.ServiceModel.Http` 10.0.652802
-- Commit `f738807`, measured 2026-10-01T15:29Z–15:48Z
 
+## Test Setup
+- server warmup time `10 sec` (done to exlude connection setup and JIT time)
+- test duration `60 sec` 
+- concurrency levels `1/10/20/40/60/80/100` (simulates the number of concurrent clients. Each client has its own channel)
+
+## Results
+
+Throughput at each concurrency level
+
+![Throughput vs Concurrency](./docs/Chart1.png)
+
+
+| Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
+|---|---|---|---|---|
+| 1 | **21,698** | 16,106 | 14,338 | 12,286 |
+| 10 | **81,292** | 76,832 | 60,995 | 52,570 |
+| 20 | **82,315** | 78,717 | 58,438 | 51,589 |
+| 40 | **81,015** | 78,997 | 57,621 | 51,702 |
+| 60 | **79,381** | 76,919 | 56,024 | 50,200 |
+| 80 | **78,472** | 76,032 | 54,638 | 48,392 |
+| 100 | **76,710** | 74,960 | 54,193 | 45,654 |
+
+
+### Raw data
+
+ **Zero failed calls across all 28 runs** (~98.9M successful requests). Latency in milliseconds.
+
+| Transport | Conc. | Throughput | p50 | p90 | p95 | p99 | mean | max |
+|---|---|---|---|---|---|---|---|---|
+| `nettcp` | 1 | 21,698 req/s | 0.039 | 0.059 | 0.070 | 0.111 | 0.046 | 203.172 |
+| `nettcp` | 10 | 81,292 req/s | 0.103 | 0.129 | 0.144 | 0.727 | 0.123 | 505.001 |
+| `nettcp` | 20 | 82,315 req/s | 0.202 | 0.261 | 0.664 | 1.118 | 0.243 | 7.784 |
+| `nettcp` | 40 | 81,015 req/s | 0.399 | 1.010 | 1.271 | 1.712 | 0.494 | 7.862 |
+| `nettcp` | 60 | 79,381 req/s | 0.608 | 1.506 | 1.733 | 2.293 | 0.756 | 12.979 |
+| `nettcp` | 80 | 78,472 req/s | 0.827 | 1.902 | 2.148 | 2.937 | 1.019 | 9.997 |
+| `nettcp` | 100 | 76,710 req/s | 1.066 | 2.329 | 2.621 | 3.622 | 1.303 | 13.3 |
+| `grpc` | 1 | 16,106 req/s | 0.056 | 0.085 | 0.109 | 0.177 | 0.062 | 4.444 |
+| `grpc` | 10 | 76,832 req/s | 0.118 | 0.148 | 0.161 | 0.676 | 0.130 | 9.177 |
+| `grpc` | 20 | 78,717 req/s | 0.230 | 0.289 | 0.316 | 1.085 | 0.254 | 12.89 |
+| `grpc` | 40 | 78,997 req/s | 0.452 | 0.611 | 1.118 | 1.691 | 0.506 | 4.764 |
+| `grpc` | 60 | 76,919 req/s | 0.685 | 1.244 | 1.784 | 2.315 | 0.780 | 10.504 |
+| `grpc` | 80 | 76,032 req/s | 0.925 | 1.812 | 2.285 | 2.868 | 1.052 | 12.033 |
+| `grpc` | 100 | 74,960 req/s | 1.172 | 2.334 | 2.795 | 3.547 | 1.334 | 11.272 |
+| `basichttp` | 1 | 14,338 req/s | 0.059 | 0.101 | 0.126 | 0.206 | 0.070 | 16.77 |
+| `basichttp` | 10 | 60,995 req/s | 0.129 | 0.169 | 0.200 | 1.057 | 0.164 | 9.836 |
+| `basichttp` | 20 | 58,438 req/s | 0.249 | 0.355 | 1.159 | 1.721 | 0.342 | 602.473 |
+| `basichttp` | 40 | 57,621 req/s | 0.493 | 1.663 | 1.933 | 3.041 | 0.694 | 17.048 |
+| `basichttp` | 60 | 56,024 req/s | 0.754 | 2.318 | 2.658 | 4.176 | 1.071 | 23.627 |
+| `basichttp` | 80 | 54,638 req/s | 0.991 | 3.010 | 3.500 | 5.189 | 1.464 | 23.892 |
+| `basichttp` | 100 | 54,193 req/s | 1.261 | 3.618 | 4.318 | 6.047 | 1.845 | 32.385 |
+| `wshttp` | 1 | 12,286 req/s | 0.066 | 0.121 | 0.131 | 0.245 | 0.081 | 231.218 |
+| `wshttp` | 10 | 52,570 req/s | 0.149 | 0.199 | 0.253 | 1.138 | 0.190 | 8.61 |
+| `wshttp` | 20 | 51,589 req/s | 0.284 | 0.443 | 1.290 | 1.730 | 0.388 | 12.453 |
+| `wshttp` | 40 | 51,702 req/s | 0.540 | 1.795 | 2.053 | 3.254 | 0.773 | 14.087 |
+| `wshttp` | 60 | 50,200 req/s | 0.820 | 2.519 | 2.927 | 4.435 | 1.195 | 21.527 |
+| `wshttp` | 80 | 48,392 req/s | 1.156 | 3.250 | 3.854 | 5.452 | 1.653 | 26.224 |
+| `wshttp` | 100 | 45,654 req/s | 1.554 | 4.106 | 4.969 | 6.825 | 2.190 | 33.793 |
+
+
+### Findings (take this with huge grain of salt)
+
+1. **Perf ranking: `nettcp` > `grpc` > `basichttp` > `wshttp`** at every concurrency level. `nettcp` wins 
+over `basichttp` and `wshttp` as expected. Sending binary data over raw TCP is of course faster than
+SOAP/XML over http.  `nettcp` also wins over `grpc` but barely.  Both uses binary (protobuf for grpc)
+data.  Could it be that HTTP2 added a significant overhead as compared to raw TCP?
+
+2. **Throughput of grpc and wcf services increased signicantly until concurrency level somewhere between 10 and 20.**. Throughput rises sharply then plateus
+
+3. **Latency grows roughly linearly with concurrency while throughput flattens** 
+
+4. **`wshttp` is consistently last** on both throughput and latency. The SOAP 1.2 / WS-Addressing envelope plus TLS costs adds the most overhead.
+
+### Concurrency (important)
+
+`-c N` creates **N independent clients, for gRPC as well as WCF**. Each `GrpcPerf` owns its own
+`GrpcChannel`, so N workers means N HTTP/2 connections.
+
+ 
 ## Running
+
+Build in Release mode
+
+```bash
+dotnet build -c Release
+```
 
 Start a server (one target per process):
 
 ```bash
-dotnet run --project Bench.Server -- -target wcf    # BasicHttp :5000, WSHttp :5001, NetTcp :5002
-dotnet run --project Bench.Server -- -target grpc   # gRPC on HTTP/2 :5003
+Bench.Server -target wcf    # Single service instance reacheable BasicHttp :5000, WSHttp :5001, NetTcp :5002
+Bench.Server -target grpc   # gRPC on HTTP/2 :5003
 ```
 
-Then a client sweep:
+Then the client
 
 ```bash
-# Single-call smoke test (omit -w/-d/-c)
+# Single-call smoke test to see if th server is up (omit -w/-d/-c)
 Bench.Client -target wcf -arg basichttp
 
 # Benchmark
-Bench.Client -target wcf  -arg basichttp -w 30 -d 60 -c 1
-Bench.Client -target wcf  -arg wshttp    -w 30 -d 60 -c 10
-Bench.Client -target wcf  -arg nettcp    -w 30 -d 60 -c 100
-Bench.Client -target grpc                -w 30 -d 60 -c 100
+Bench.Client -target wcf  -arg basichttp -w 10 -d 60 -c 1
+Bench.Client -target wcf  -arg wshttp    -w 10 -d 60 -c 20
+Bench.Client -target wcf  -arg nettcp    -w 10 -d 60 -c 100
+Bench.Client -target grpc                -w 10 -d 60 -c 100
 
 # Override the endpoint
 Bench.Client -target wcf -arg nettcp -address "net.tcp://localhost:5002/NorthwindWcfService/nettcp" -d 60
 ```
-
-`-w` is warmup (reuses the same client instances, so connection setup and JIT land outside the
-measurement), `-d` is measurement duration, `-c` is the number of concurrent workers. Exit code is
-0 on a clean run, 1 if any call failed, 2 on bad arguments.
-
-Note that `-c N` means N separate sockets for WCF (one `ClientBase` per worker, since a WCF client
-drives a single channel) but still one connection for gRPC (HTTP/2 multiplexing). See
-[Concurrency model](#what-the-numbers-say) for why that matters.
+ 
 
 ## Regenerating the WCF client
 
@@ -131,5 +149,3 @@ dotnet-svcutil http://localhost:5000/NorthwindWcfService/basic?wsdl \
   -r Bench.Client.csproj
 ```
 
-Passing `-r Bench.Client.csproj` lets the generator reuse the existing
-`Bench.wcf.DataContracts` types instead of emitting duplicates.

@@ -1,6 +1,5 @@
  
 using System.Runtime.Serialization;
-using CoreWCF;
 
 namespace Bench.wcf.DataContracts;
 

@@ -1,18 +1,13 @@
-﻿
-
-using System.Diagnostics;
-using System.Net;
-using System.Security.Cryptography.X509Certificates;
+﻿using System.Security.Cryptography.X509Certificates;
 using System.ServiceModel;
 using System.ServiceModel.Security;
-using System.Text.Json;
 using System.Xml;
 using Bench.Client.Wcf;
 using Bench.wcf.DataContracts;
 
 namespace Bench.Client.wcf;
 
-public class Perf(WcfTransport transport, Args args) : IDisposable {
+public class WcfPerf(WcfTransport transport, Args args) : IDisposable {
     private NorthwindServiceClient _client = Get(transport, args);
 
     private static NorthwindServiceClient Get(WcfTransport transport, Args args) {

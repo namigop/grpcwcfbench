@@ -29,13 +29,12 @@ if (!Cli.TryParse(args, out Cli cli, out string? parseError)) {
 }
 
 try {
-    // No timing flags at all means "just prove the endpoint works": one call, echoed as JSON.
+    // No timing flags. just to check if the service is up
     bool smokeTest = cli.Warmup is null && cli.Duration is null;
-
     if (smokeTest) {
-        object? response = cli.UseGrpc
+        var response = cli.UseGrpc
             ? await new GrpcPerf(cli.Address).Call(0)
-            : await new Perf(cli.Transport, new Args(cli.Address, 1, TimeSpan.Zero, TimeSpan.Zero)).Call(0);
+            : await new WcfPerf(cli.Transport, new Args(cli.Address, 1, TimeSpan.Zero, TimeSpan.Zero)).Call(0);
 
         Console.WriteLine(JsonSerializer.Serialize(response));
         return 0;
@@ -48,8 +47,8 @@ try {
         Warmup: TimeSpan.FromSeconds(cli.Warmup ?? 0));
 
     BenchResult result = cli.UseGrpc
-        ? await RunGrpcAsync(benchArgs)
-        : await RunWcfAsync(cli.Transport, benchArgs);
+        ? await RunGrpc(benchArgs)
+        : await RunWcf(cli.Transport, benchArgs);
 
     Console.WriteLine($"{cli.Describe()}  (warmup {benchArgs.Warmup.TotalSeconds:0.###}s, duration {benchArgs.Duration.TotalSeconds:0.###}s, concurrency {benchArgs.Concurrency})");
     Console.WriteLine(Harness.CreateReport(result));
@@ -63,31 +62,34 @@ try {
     return 1;
 }
 
-static async Task<BenchResult> RunWcfAsync(WcfTransport transport, Args args) {
-    // One client per worker: a WCF ClientBase drives a single channel, so sharing one across
-    // workers would serialise the calls and make -c meaningless.
-    var clients = new Perf[args.Concurrency];
+static async Task<BenchResult> Run(Func<int, CancellationToken, Task<bool>>[] callers, Args args) {
+   //Warmup
+    if (args.Warmup > TimeSpan.Zero) {
+        await Harness.Run(args with { Duration = args.Warmup }, (id, ct) => callers[id](id, ct), record: false);
+    }
+
+    // Actual run
+    return await Harness.Run(args, (id, ct) => callers[id](id, ct), record: true);
+}
+
+static async Task<BenchResult> RunWcf(WcfTransport transport, Args args) {
+    var clients = Enumerable.Range(0, args.Concurrency).Select(_ => new WcfPerf(transport, args)).ToArray();    
     try {
-        for (int i = 0; i < clients.Length; i++) clients[i] = new Perf(transport, args);
-
-        // Warmup reuses the same clients so connection setup and JIT land outside the measurement.
-        if (args.Warmup > TimeSpan.Zero) {
-            await Harness.Run(args with { Duration = args.Warmup }, (id, ct) => clients[id].Call(id, ct), record: false);
-        }
-
-        return await Harness.Run(args, (id, ct) => clients[id].Call(id, ct), record: true);
+        var callers = clients.Select<WcfPerf, Func<int, CancellationToken, Task<bool>>>(c => c.Call).ToArray();
+        return await Run(callers, args);
     } finally {
-        foreach (Perf client in clients) client.Dispose();
+        foreach (var client in clients)
+            client.Dispose();
     }
 }
 
-static async Task<BenchResult> RunGrpcAsync(Args args) {
-    // One channel shared by every worker: HTTP/2 multiplexes concurrent calls over one connection.
-    using var perf = new GrpcPerf(args.Address);
-
-    if (args.Warmup > TimeSpan.Zero) {
-        await Harness.Run(args with { Duration = args.Warmup }, (id, ct) => perf.Call(id, ct), record: false);
+static async Task<BenchResult> RunGrpc(Args args) {
+    var clients = Enumerable.Range(0, args.Concurrency).Select(_ => new GrpcPerf(args.Address)).ToArray();    
+    try {
+        var callers = clients.Select<GrpcPerf, Func<int, CancellationToken, Task<bool>>>(c => c.Call).ToArray();
+        return await Run(callers, args);
+    } finally {
+        foreach (var client in clients)
+            client.Dispose();
     }
-
-    return await Harness.Run(args, (id, ct) => perf.Call(id, ct), record: true);
 }
