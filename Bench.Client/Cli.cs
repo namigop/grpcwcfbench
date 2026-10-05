@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using Bench;
+using Bench.Client;
 
 /// <summary>Parsed command line: the target selection plus the benchmark knobs.</summary>
 public sealed class Cli {
@@ -14,17 +16,24 @@ public sealed class Cli {
     public int Concurrency { get; private set; } = 1;
     public int? Warmup { get; private set; }
     public int? Duration { get; private set; }
+    public BenchOperation Operation { get; private set; } = BenchOperation.GetOrderById;
+    public int Count { get; private set; }
 
-    public string Describe() => UseGrpc
-        ? $"gRPC over HTTP/2 — {Address}"
-        : $"WCF over {Transport}Binding — {Address}";
+    public string Describe() {
+        var operation = Operation == BenchOperation.GetOrders
+            ? $"getorders(n={OrderData.ResolveCount(Count):N0})"
+            : "getorderbyid";
+        return UseGrpc
+            ? $"gRPC over HTTP/2 — {Address} — {operation}"
+            : $"WCF over {Transport}Binding — {Address} — {operation}";
+    }
 
     public static bool TryParse(string[] argv, out Cli cli, out string? error) {
         cli = new Cli();
         error = null;
 
-        string? target = null, arg = null, address = null;
-        int? warmup = null, duration = null, concurrency = null;
+        string? target = null, arg = null, address = null, op = null;
+        int? warmup = null, duration = null, concurrency = null, count = null;
 
         for (int i = 0; i < argv.Length; i++) {
             switch (argv[i]) {
@@ -38,6 +47,19 @@ public sealed class Cli {
 
                 case "-address":
                     if (!TryValue(argv, ref i, "-address", out address, out error)) return false;
+                    break;
+
+                case "-op":
+                    if (!TryValue(argv, ref i, "-op", out op, out error)) return false;
+                    break;
+
+                case "-n":
+                    if (!TryValue(argv, ref i, "-n", out string? n, out error)) return false;
+                    if (!int.TryParse(n, CultureInfo.InvariantCulture, out int parsedCount) || parsedCount < 0) {
+                        error = $"-n must be an integer >= 0 (got '{n}')";
+                        return false;
+                    }
+                    count = parsedCount;
                     break;
 
                 case "-w":
@@ -102,6 +124,30 @@ public sealed class Cli {
                 return false;
         }
 
+        if (op is not null) {
+            switch (op) {
+                case "getorderbyid":
+                    cli.Operation = BenchOperation.GetOrderById;
+                    break;
+                case "getorders":
+                    cli.Operation = BenchOperation.GetOrders;
+                    break;
+                default:
+                    error = $"-op '{op}' is not a valid operation (expected getorderbyid or getorders)";
+                    return false;
+            }
+        }
+
+        // -n only means something for the batch operation. Catching it here beats silently
+        // ignoring a count the run never sends.
+        if (count is not null) {
+            if (cli.Operation != BenchOperation.GetOrders) {
+                error = "-n is only valid with '-op getorders'";
+                return false;
+            }
+            cli.Count = count.Value;
+        }
+
         cli.Warmup = warmup;
         cli.Duration = duration;
         cli.Concurrency = concurrency ?? 1;
@@ -137,10 +183,18 @@ public sealed class Cli {
         writer.WriteLine("  Bench.Client -target wcf  -arg nettcp");
         writer.WriteLine("  Bench.Client -target grpc");
         writer.WriteLine();
-        writer.WriteLine("Benchmark options (omit all three for a single-call smoke test):");
+        writer.WriteLine("Operations:");
+        writer.WriteLine("  -op getorderbyid   single order, the default (backwards compatible)");
+        writer.WriteLine("  -op getorders      batch of orders, 10000 by default");
+        writer.WriteLine();
+        writer.WriteLine("Benchmark options (omit -w/-d/-c for a single-call smoke test):");
         writer.WriteLine("  -w <seconds>  warmup duration before measurement starts (default 0)");
         writer.WriteLine("  -d <seconds>  measurement duration (default 0 = single call)");
         writer.WriteLine("  -c <count>    concurrent workers (default 1)");
+        writer.WriteLine();
+        writer.WriteLine("Batch options (-op getorders only):");
+        writer.WriteLine("  -n <count>    orders per call; 0 or omitted means the server default (10000),");
+        writer.WriteLine("                clamped server side to 1000000");
         writer.WriteLine();
         writer.WriteLine("Overrides:");
         writer.WriteLine("  -address <uri>       override the endpoint address for the selected target");

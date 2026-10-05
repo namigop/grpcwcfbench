@@ -1,13 +1,20 @@
 # WCF vs gRPC Benchmark
 
-Micro-benchmark comparing **WCF (CoreWCF) over three transports** against **gRPC** for a
-single `GetOrderById` unary method, on .NET 10 / C#.
+Micro-benchmark comparing **WCF (CoreWCF) over three transports** against **gRPC** for two
+unary methods, on .NET 10 / C#: a single-order `GetOrderById` and a batch `GetOrders`
+(10,000 orders by default). The published results below are all `GetOrderById`.
 
 This benchmark was done as a fun excercise. Be aware of the following caveats
 - Both client and server were ran on the same machine.
 - The response of the `GetOrderById` method is hardcoded.  There is no additional logic apart from just returning an `Order` instance
 - No finetuning was done on the gRPC or WCF servers
 - The duration of the benchmark is just 60 sec (with a 10 sec warmup time)
+- For `GetOrders` the client allocates roughly 1.5 KB of managed heap per order, so those runs are
+  allocation-bound long before they are transport-bound. Read the **Memory / GC** block of the
+  report before comparing them. See [Benchmarking `GetOrders`](#benchmarking-getorders).
+- Both processes use the default workstation GC. Server GC would scale better at high
+  concurrency, but switching it would make the `GetOrderById` table above unreproducible with
+  the documented commands, so it was left alone.
 
 ## Transports compared
 
@@ -133,7 +140,38 @@ data.  Could it be that HTTP2 added a significant overhead as compared to raw TC
 `-c N` creates **N independent clients, for gRPC as well as WCF**. Each `GrpcPerf` owns its own
 `GrpcChannel`, so N workers means N HTTP/2 connections.
 
- 
+## Benchmarking `GetOrders`
+
+`-op getorders` switches the harness to the batch operation. The same `-w`, `-d` and `-c` knobs
+apply, and the report gains two things: an **Orders/s** line, and a **Memory / GC** block on every
+run (including `getorderbyid`, where it is the baseline that makes the batch cost legible).
+
+```bash
+Bench.Client -target grpc -op getorders -w 10 -d 60 -c 4
+Bench.Client -target wcf  -arg nettcp -op getorders -n 20000 -w 10 -d 60 -c 8
+```
+
+Things worth knowing before you compare the numbers:
+
+- **The client allocates about 1.5 KB of managed heap per order.** At the default 10,000 orders
+  that is ~15 MB per call, per worker, on top of the server. Check the **Memory / GC** block
+  first: a run showing hundreds of MB allocated and dozens of gen2 collections is
+  allocation-bound, and its throughput is mostly a statement about the deserializer, not the
+  wire. For reference, `grpc` at `-c 2` / 10,000 orders allocates ~690 MB in 3 s and
+  `basichttp` allocates more, because it first has to build 11.6 MB of XML.
+- **Latency includes full deserialization.** The harness times the whole call, which is the
+  user-visible cost, but it is not a pure transport measurement.
+- **A 10,000 order response is 2.6 MB over protobuf and 11.6 MB over SOAP 1.1.** The gRPC
+  channel's receive limit is raised to `int.MaxValue` so a count sweep does not fail on gRPC
+  while succeeding on WCF; the default 4 MB would break at roughly 15,000 orders.
+- **The client asserts the response length.** It resolves the expected count with the same
+  `OrderData.ResolveCount` the server uses, so a clamped or truncated response is counted as a
+  failure instead of quietly producing a wrong throughput.
+- **Start lower than you would for `GetOrderById`.** `-c 100` at 10,000 orders is roughly
+  1.4 GB of client working set, and `-c 100` is where the single-order benchmark peaked. The
+  client prints an advisory estimate above 1 GB, but it is only a guess; the report's Peak WS
+  is the figure to trust.
+
 ## Running
 
 Build in Release mode
@@ -161,9 +199,20 @@ Bench.Client -target wcf  -arg wshttp    -w 10 -d 60 -c 20
 Bench.Client -target wcf  -arg nettcp    -w 10 -d 60 -c 100
 Bench.Client -target grpc                -w 10 -d 60 -c 100
 
+# Batch operation (10,000 orders by default)
+Bench.Client -target grpc                -op getorders -w 10 -d 60 -c 4
+Bench.Client -target wcf  -arg basichttp -op getorders -w 10 -d 60 -c 4
+
+# Batch operation at a specific size
+Bench.Client -target grpc -op getorders -n 500 -w 10 -d 60 -c 8
+
 # Override the endpoint
 Bench.Client -target wcf -arg nettcp -address "net.tcp://localhost:5002/NorthwindWcfService/nettcp" -d 60
 ```
+
+`-op` selects the operation and defaults to `getorderbyid`, so every command in the results
+table above still behaves exactly as it did. `-n` sets the batch size and is only accepted
+alongside `-op getorders`.
  
 
 ## Regenerating the WCF client

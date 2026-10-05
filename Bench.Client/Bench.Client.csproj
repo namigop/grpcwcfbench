@@ -18,7 +18,12 @@
     </ItemGroup>
 
     <ItemGroup>
-      <Compile Include="..\Bench.Server\wcf\DataContracts\Customer.cs">
+      <!-- Linked so the client resolves the batch count with OrderData.ResolveCount, the same
+         function the server uses. Duplicating the rule would let the two drift apart. -->
+    <Compile Include="..\Bench.Server\OrderData.cs">
+      <Link>OrderData.cs</Link>
+    </Compile>
+    <Compile Include="..\Bench.Server\wcf\DataContracts\Customer.cs">
         <Link>wcf\DataContracts\Customer.cs</Link>
       </Compile>
       <Compile Include="..\Bench.Server\wcf\DataContracts\Order.cs">

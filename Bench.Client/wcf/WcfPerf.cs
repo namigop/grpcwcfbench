@@ -8,7 +8,11 @@ using Bench.wcf.DataContracts;
 namespace Bench.Client.wcf;
 
 public class WcfPerf(WcfTransport transport, Args args) : IDisposable {
-    private NorthwindServiceClient _client = Get(transport, args);
+    private readonly NorthwindServiceClient _client = Get(transport, args);
+    private readonly BenchOperation _operation = args.Operation;
+    private readonly int _expectedOrders = args.EffectiveOrderCount;
+    private readonly OrdersRequest _ordersRequest = new() { Count = args.Count };
+    public int? LastOrders { get; private set; }
 
     private static NorthwindServiceClient Get(WcfTransport transport, Args args) {
         NorthwindServiceClient client = transport switch {
@@ -29,8 +33,18 @@ public class WcfPerf(WcfTransport transport, Args args) : IDisposable {
     }
 
     public async Task<bool> Call(int clientId, CancellationToken ct = default) {
-        var order = await _client.GetOrderByIdAsync(new OrderRequest { OrderId = 1 });
-        return order != null;
+        switch (_operation) {
+            case BenchOperation.GetOrderById:
+                return await _client.GetOrderByIdAsync(new OrderRequest { OrderId = 1 }) != null;
+
+            default: {
+                var response = await _client.GetOrdersAsync(_ordersRequest);
+                LastOrders = response.Orders.Length;
+                // A length mismatch means the server clamped or something truncated the response.
+                // Reporting success there would put a wrong throughput in the results table.
+                return LastOrders.Value == _expectedOrders;
+            }
+        }
     }
  
     static NetTcpBinding CreateNetTcpBinding() {

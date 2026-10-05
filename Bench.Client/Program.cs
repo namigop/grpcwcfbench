@@ -6,10 +6,17 @@
 //   Bench.Client -target wcf  -arg nettcp      WCF over NetTcpBinding   (net.tcp://localhost:5002/NorthwindWcfService/nettcp)
 //   Bench.Client -target grpc                  gRPC over HTTP/2         (http://localhost:5003)
 //
-// Benchmark options (omit all three for a single-call smoke test that echoes the response JSON):
+// Operations:
+//   -op getorderbyid  single order (default)
+//   -op getorders     batch of orders, 10000 by default
+//
+// Benchmark options (omit -w/-d/-c for a single-call smoke test that echoes the response):
 //   -w <seconds>   warmup duration before measurement starts (default 0)
 //   -d <seconds>   measurement duration                        (default 0 = single call)
 //   -c <count>     concurrent workers                          (default 1)
+//
+// Batch options (-op getorders only):
+//   -n <count>     orders per call; 0 or omitted means the server default (10000)
 //
 // Overrides:
 //   -address <uri>  override the endpoint address for the selected target
@@ -29,22 +36,38 @@ if (!Cli.TryParse(args, out Cli cli, out string? parseError)) {
 }
 
 try {
-    // No timing flags. just to check if the service is up
-    bool smokeTest = cli.Warmup is null && cli.Duration is null;
-    if (smokeTest) {
-        var response = cli.UseGrpc
-            ? await new GrpcPerf(cli.Address).Call(0)
-            : await new WcfPerf(cli.Transport, new Args(cli.Address, 1, TimeSpan.Zero, TimeSpan.Zero)).Call(0);
-
-        Console.WriteLine(JsonSerializer.Serialize(response));
-        return 0;
-    }
-
     var benchArgs = new Args(
         Address: cli.Address,
         Concurrency: cli.Concurrency,
         Duration: TimeSpan.FromSeconds(cli.Duration ?? 0),
-        Warmup: TimeSpan.FromSeconds(cli.Warmup ?? 0));
+        Warmup: TimeSpan.FromSeconds(cli.Warmup ?? 0),
+        Operation: cli.Operation,
+        Count: cli.Count);
+
+    // No timing flags. just to check if the service is up
+    bool smokeTest = cli.Warmup is null && cli.Duration is null;
+    if (smokeTest) {
+        bool ok;
+        int? orders;
+        if (cli.UseGrpc) {
+            using var client = new GrpcPerf(benchArgs.Address, benchArgs.Operation, benchArgs.Count);
+            ok = await client.Call(0);
+            orders = client.LastOrders;
+        } else {
+            using var client = new WcfPerf(cli.Transport, benchArgs);
+            ok = await client.Call(0);
+            orders = client.LastOrders;
+        }
+
+        // Keep the historical bare-bool output for the single order smoke test, and show the
+        // batch size for getorders, where "true" on its own says almost nothing.
+        Console.WriteLine(benchArgs.Operation == BenchOperation.GetOrders
+            ? JsonSerializer.Serialize(new { ok, orders = orders ?? 0 })
+            : JsonSerializer.Serialize(ok));
+        return ok ? 0 : 1;
+    }
+
+    WarnIfLargeBatch(benchArgs);
 
     BenchResult result = cli.UseGrpc
         ? await RunGrpc(benchArgs)
@@ -62,6 +85,23 @@ try {
     return 1;
 }
 
+static void WarnIfLargeBatch(Args args) {
+    if (args.Operation != BenchOperation.GetOrders) return;
+
+    // Order-of-magnitude only: roughly 1.5 KB of managed heap per order once the response object
+    // graph, the strings and the XML reader buffers are counted. Advisory, never a limit, so a
+    // deliberate stress run is still possible. The report's Peak WS is the authoritative figure.
+    const long ManagedBytesPerOrderEstimate = 1536;
+    long estimate = (long)args.Concurrency * args.EffectiveOrderCount * ManagedBytesPerOrderEstimate;
+    if (estimate < 1L << 30) return;
+
+    Console.WriteLine(
+        $"WARNING: rough client-side estimate {estimate / (double)(1L << 30):0.0} GB " +
+        $"({args.Concurrency} workers x {args.EffectiveOrderCount:N0} orders x ~1.5 KB). " +
+        "This is a guess, not a limit. Lower -c or -n if the run thrashes or dies, and compare " +
+        "against the Peak WS in the report.");
+}
+
 static async Task<BenchResult> Run(Func<int, CancellationToken, Task<bool>>[] callers, Args args) {
    //Warmup
     if (args.Warmup > TimeSpan.Zero) {
@@ -73,7 +113,7 @@ static async Task<BenchResult> Run(Func<int, CancellationToken, Task<bool>>[] ca
 }
 
 static async Task<BenchResult> RunWcf(WcfTransport transport, Args args) {
-    var clients = Enumerable.Range(0, args.Concurrency).Select(_ => new WcfPerf(transport, args)).ToArray();    
+    var clients = Enumerable.Range(0, args.Concurrency).Select(_ => new WcfPerf(transport, args)).ToArray();     
     try {
         var callers = clients.Select<WcfPerf, Func<int, CancellationToken, Task<bool>>>(c => c.Call).ToArray();
         return await Run(callers, args);
@@ -84,7 +124,7 @@ static async Task<BenchResult> RunWcf(WcfTransport transport, Args args) {
 }
 
 static async Task<BenchResult> RunGrpc(Args args) {
-    var clients = Enumerable.Range(0, args.Concurrency).Select(_ => new GrpcPerf(args.Address)).ToArray();    
+    var clients = Enumerable.Range(0, args.Concurrency).Select(_ => new GrpcPerf(args.Address, args.Operation, args.Count)).ToArray();    
     try {
         var callers = clients.Select<GrpcPerf, Func<int, CancellationToken, Task<bool>>>(c => c.Call).ToArray();
         return await Run(callers, args);
