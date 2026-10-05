@@ -9,12 +9,22 @@ option go_package = "northwind/proto";
 service NorthwindService {
   // GetOrderById retrieves a single order by its ID
   rpc GetOrderById(OrderRequest) returns (Order) {}
- 
+
+  // GetOrders retrieves a batch of orders (10000 by default)
+  rpc GetOrders(OrdersRequest) returns (OrdersResponse) {}
+
 }
 
-// Request/Response messages
 message OrderRequest {
   int32 order_id = 1;
+}
+
+message OrdersRequest {
+  int32 count = 1;
+}
+
+message OrdersResponse {
+  repeated Order orders = 1;
 }
   
 // Entity messages

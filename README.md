@@ -18,6 +18,37 @@ This benchmark was done as a fun excercise. Be aware of the following caveats
 | `wcf` `nettcp` | CoreWCF `NetTcpBinding` (binary over raw TCP) | `net.tcp://localhost:5002/NorthwindWcfService/nettcp` |
 | `grpc` | gRPC over HTTP/2 | `http://localhost:5003` |
 
+## Service methods
+
+Both services expose the same two operations, so the transports can be compared on a single-order
+and a batch response.
+
+| Method | gRPC | WCF | Returns |
+|---|---|---|---|
+| `GetOrderById` | `rpc GetOrderById(OrderRequest) returns (Order)` | `Order GetOrderById(OrderRequest)` | one hardcoded order |
+| `GetOrders` | `rpc GetOrders(OrdersRequest) returns (OrdersResponse)` | `OrdersResponse GetOrders(OrdersRequest)` | **10,000** orders |
+
+Both `GetOrders` operations return a response wrapper holding the batch, which mirrors the
+`OrdersResponse` message on both sides and leaves room for paging metadata later:
+
+```
+WCF     OrdersResponse { Order[] Orders }
+gRPC    OrdersResponse { repeated Order orders }
+```
+
+`GetOrders` takes an optional `Count` (gRPC) / `Count` (WCF `OrdersRequest`). A value of 0 or less
+means "use the server default" of 10,000. Max count is clamped to 1,000,000. The batch is materialised once and cached per process, because
+rebuilding 10,000 orders on every call would measure the allocator rather than the transport.
+ 
+Measured payload for the 10,000 order batch on .NET 10:
+
+| Transport                   | Serialized size |
+|-----------------------------|--------------|
+| `grpc` (protobuf)           | ~2.5 MB      |
+| `basichttp` (SOAP 1.1 + XML) | ~11 MB      |
+| `wsHttp` (SOAP 1.1 + XML)   | ~11 MB       |
+| `nettcp`     | ~5.9 MB      |
+ 
 
 ## Environment
 
@@ -143,9 +174,32 @@ The WCF proxy in `Bench.Client/wcf/ServiceReference/` is generated from the runn
 cd Bench.Client
 dotnet-svcutil http://localhost:5000/NorthwindWcfService/basic?wsdl \
   -d wcf/ServiceReference \
+  -o NorthwindServiceClient.cs \
   -n 'http://tempuri.org/,Bench.Client.Wcf' \
   -ct System.Collections.Generic.List`1 \
   -ser DataContractSerializer \
   -r Bench.Client.csproj
 ```
+
+Three things to know before running it:
+
+- **The WCF server must already be running** (`Bench.Server -target wcf`), since the WSDL is fetched
+  over HTTP.
+- **`-o NorthwindServiceClient.cs` is required.** Without it `svcutil` 8.0.0 names the output
+  `Reference.cs` and leaves the real proxy stale.
+- **`svcutil` refuses to overwrite an existing output file, and `-r` makes it build
+  `Bench.Client` first** to resolve the shared DataContract types. So keep the old proxy in place
+  while regenerating; deleting it first makes the project fail to compile (`WcfPerf` needs the
+  proxy) and `svcutil` aborts. Move it aside, run the command, then replace it.
+
+`-r` is what keeps the generated file free of duplicated DataContract types: `Order`, `Customer`,
+`OrderDetail`, `OrderRequest`, `OrdersRequest` and `OrdersResponse` are linked in from
+`Bench.Server` via
+`<Compile Include>` and referenced by namespace. Any new DataContract on the server must be added
+to that list, otherwise `svcutil` re-declares a private copy of it inside the proxy.
+
+Note that `svcutil` also offers to inject `System.ServiceModel.Duplex` / `.Security` /
+`.Federation` at floating `4.10.*` versions and to rewrite this file's formatting. Neither was
+kept: the project builds without them, and floating versions work against the pinned
+`10.0.652802` packages that the benchmark results depend on.
 

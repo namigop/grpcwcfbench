@@ -18,6 +18,9 @@ namespace Bench.Client.Wcf
         
         [System.ServiceModel.OperationContractAttribute(Action="http://tempuri.org/INorthwindService/GetOrderById", ReplyAction="http://tempuri.org/INorthwindService/GetOrderByIdResponse")]
         System.Threading.Tasks.Task<Bench.wcf.DataContracts.Order> GetOrderByIdAsync(Bench.wcf.DataContracts.OrderRequest request);
+        
+        [System.ServiceModel.OperationContractAttribute(Action="http://tempuri.org/INorthwindService/GetOrders", ReplyAction="http://tempuri.org/INorthwindService/GetOrdersResponse")]
+        System.Threading.Tasks.Task<Bench.wcf.DataContracts.OrdersResponse> GetOrdersAsync(Bench.wcf.DataContracts.OrdersRequest request);
     }
     
     [System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.Tools.ServiceModel.Svcutil", "8.0.0")]
@@ -68,6 +71,11 @@ namespace Bench.Client.Wcf
             return base.Channel.GetOrderByIdAsync(request);
         }
         
+        public System.Threading.Tasks.Task<Bench.wcf.DataContracts.OrdersResponse> GetOrdersAsync(Bench.wcf.DataContracts.OrdersRequest request)
+        {
+            return base.Channel.GetOrdersAsync(request);
+        }
+        
         public virtual System.Threading.Tasks.Task OpenAsync()
         {
             return System.Threading.Tasks.Task.Factory.FromAsync(((System.ServiceModel.ICommunicationObject)(this)).BeginOpen(null, null), new System.Action<System.IAsyncResult>(((System.ServiceModel.ICommunicationObject)(this)).EndOpen));
@@ -101,6 +109,15 @@ namespace Bench.Client.Wcf
                 result.Security.Transport.ClientCredentialType = System.ServiceModel.HttpClientCredentialType.None;
                 return result;
             }
+            if ((endpointConfiguration == EndpointConfiguration.NetTcpBinding_INorthwindService))
+            {
+                System.ServiceModel.NetTcpBinding result = new System.ServiceModel.NetTcpBinding();
+                result.MaxBufferSize = int.MaxValue;
+                result.ReaderQuotas = System.Xml.XmlDictionaryReaderQuotas.Max;
+                result.MaxReceivedMessageSize = int.MaxValue;
+                result.Security.Mode = System.ServiceModel.SecurityMode.None;
+                return result;
+            }
             throw new System.InvalidOperationException(string.Format("Could not find endpoint with name \'{0}\'.", endpointConfiguration));
         }
         
@@ -114,6 +131,10 @@ namespace Bench.Client.Wcf
             {
                 return new System.ServiceModel.EndpointAddress("https://localhost:5001/NorthwindWcfService/ws");
             }
+            if ((endpointConfiguration == EndpointConfiguration.NetTcpBinding_INorthwindService))
+            {
+                return new System.ServiceModel.EndpointAddress("net.tcp://[::]:5002/NorthwindWcfService/nettcp");
+            }
             throw new System.InvalidOperationException(string.Format("Could not find endpoint with name \'{0}\'.", endpointConfiguration));
         }
         
@@ -123,6 +144,8 @@ namespace Bench.Client.Wcf
             BasicHttpBinding_INorthwindService,
             
             WSHttpBinding_INorthwindService,
+            
+            NetTcpBinding_INorthwindService,
         }
     }
 }

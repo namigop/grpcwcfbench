@@ -30,12 +30,18 @@
       <Compile Include="..\Bench.Server\wcf\DataContracts\OrderRequest.cs">
         <Link>wcf\DataContracts\OrderRequest.cs</Link>
       </Compile>
+      <Compile Include="..\Bench.Server\wcf\DataContracts\OrdersRequest.cs">
+        <Link>wcf\DataContracts\OrdersRequest.cs</Link>
+      </Compile>
+      <Compile Include="..\Bench.Server\wcf\DataContracts\OrdersResponse.cs">
+        <Link>wcf\DataContracts\OrdersResponse.cs</Link>
+      </Compile>
     </ItemGroup>
 
     <ItemGroup>
       <!-- WCF client proxy generated from http://localhost:5000/NorthwindWcfService/basic?wsdl via dotnet-svcutil. -->
       <!-- NorthwindServiceClient.cs is auto-included by the SDK (project dir). Params file tracked so regeneration is reproducible. -->
-      <!-- Regenerate with: dotnet-svcutil http://localhost:5000/NorthwindWcfService/basic?wsdl -d wcf/ServiceReference -n 'http://tempuri.org/,Bench.Client.Wcf' -ct System.Collections.Generic.List`1 -ser DataContractSerializer -r Bench.Client.csproj -->
+      <!-- Regenerate with: dotnet-svcutil http://localhost:5000/NorthwindWcfService/basic?wsdl -d wcf/ServiceReference -o NorthwindServiceClient.cs -n 'http://tempuri.org/,Bench.Client.Wcf' -ct System.Collections.Generic.List`1 -ser DataContractSerializer -r Bench.Client.csproj -->
       <None Include="wcf\ServiceReference\dotnet-svcutil.params.json" />
     </ItemGroup>
 

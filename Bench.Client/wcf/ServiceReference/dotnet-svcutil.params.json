@@ -13,7 +13,7 @@
     ],
     "outputFile": "NorthwindServiceClient.cs",
     "references": [
-      "/Users/erikaraojo/Work/Source/grpcwcfbench/Bench.Client/Bench.Client.csproj"
+      "Bench.Client.csproj"
     ],
     "serializerMode": "DataContractSerializer",
     "targetFramework": "net10.0",
