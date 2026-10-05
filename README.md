@@ -143,8 +143,8 @@ data.  Could it be that HTTP2 added a significant overhead as compared to raw TC
 ## Benchmarking `GetOrders`
 
 `-op getorders` switches the harness to the batch operation. The same `-w`, `-d` and `-c` knobs
-apply, and the report gains two things: an **Orders/s** line, and a **Memory / GC** block on every
-run (including `getorderbyid`, where it is the baseline that makes the batch cost legible).
+apply, and the report gains a **Memory / GC** block on every run (including `getorderbyid`, where
+it is the baseline that makes the batch cost legible).
 
 ```bash
 Bench.Client -target grpc -op getorders -w 10 -d 60 -c 4
@@ -171,6 +171,16 @@ Things worth knowing before you compare the numbers:
   1.4 GB of client working set, and `-c 100` is where the single-order benchmark peaked. The
   client prints an advisory estimate above 1 GB, but it is only a guess; the report's Peak WS
   is the figure to trust.
+- **Peak WS is the kernel's high-water mark for the process**, taken from
+  `getrusage(RUSAGE_SELF).ru_maxrss`. It covers the whole process lifetime, so it includes
+  start-up, JIT and the warm-up pass rather than the measured window alone. It was previously
+  read from `Process.PeakWorkingSet64`, which returns 0 on macOS and so printed `Peak WS : 0 B`
+  for every run; that property is correct on Windows and is still used there. Note the unit
+  trap: `ru_maxrss` is bytes on the Darwin family but kilobytes on Linux.
+- **Treat the working-set estimate above as optimistic.** Measured on the batch operation at
+  1,000 orders, gRPC peaks at 92 MB at `-c 1`, 150-168 MB at `-c 10`, and then jumps to
+  6-8 GB at `-c 20` — a cliff well past what `concurrency x orders x 1.5 KB` predicts. The
+  advisory estimate will not warn you about that step.
 
 ## Running
 

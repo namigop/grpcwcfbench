@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Threading;
 using Bench.Client;
 
 namespace Bench;
@@ -27,20 +28,13 @@ public static class Harness {
                     """;
         }
 
-        // Orders/s only means something for the batch operation; for GetOrderById req/s already is
-        // the domain throughput. The trailing newline is explicit because a raw string literal
-        // does not emit one before its closing delimiter.
-        var ordersLine = r.OrdersPerCall > 0
-            ? $"Orders/s     : {r.OrdersPerSecond:N0}  ({r.OrdersPerCall:N0} orders per call){Environment.NewLine}"
-            : "";
-
         var report = $"""
                       ================ Results ================
                       Elapsed      : {r.Elapsed.TotalSeconds:F2}s
                       Successful   : {r.Successes:N0}
                       Failed       : {r.Errors:N0}
                       Throughput   : {r.Successes / r.Elapsed.TotalSeconds:N0} req/s
-                      {ordersLine}Latency (ms)
+                      Latency (ms)
                          min   : {r.Latencies[0]:F3}
                          mean  : {r.Latencies.Average():F3}
                          p50   : {Percentile(r.Latencies, 50):F3}
@@ -56,8 +50,15 @@ public static class Harness {
         return report;
     }
 
+    static void EnsureThreadPoolCapacity(int concurrency) {
+        ThreadPool.GetMinThreads(out int minWorkerThreads, out int minCompletionThreads);
+        int wanted = concurrency + Environment.ProcessorCount;
+        if (minWorkerThreads < wanted)
+            ThreadPool.SetMinThreads(wanted, minCompletionThreads);
+    }
+
     public static async Task<BenchResult> Run(Args args, Func<int, CancellationToken, Task> call, bool record) {
-        int ordersPerCall = args.Operation == BenchOperation.GetOrders ? args.EffectiveOrderCount : 0;
+        EnsureThreadPoolCapacity(args.Concurrency);
 
         // Snapshot before the workers start so the warmup pass (same harness, discarded result)
         // does not leak into the measured figures.
@@ -90,8 +91,7 @@ public static class Harness {
             gen0Before == GC.CollectionCount(0) ? 0 : GC.CollectionCount(0) - gen0Before,
             gen1Before == GC.CollectionCount(1) ? 0 : GC.CollectionCount(1) - gen1Before,
             gen2Before == GC.CollectionCount(2) ? 0 : GC.CollectionCount(2) - gen2Before,
-            Process.GetCurrentProcess().PeakWorkingSet64,
-            ordersPerCall);
+            Bench.Client.PeakWorkingSet.Bytes);
         
         async Task Loop(int id) {
             {
