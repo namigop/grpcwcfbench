@@ -11,13 +11,14 @@ This benchmark was done as a fun excercise. Be aware of the following caveats
 - No finetuning was done on the gRPC or WCF servers
 - The duration of the benchmark is just 60 sec (with a 10 sec warmup time)
 - For `GetOrders` the client allocates roughly 1.5 KB of managed heap per order, so those runs are
-  allocation-bound long before they are transport-bound. Read the **Memory / GC** block of the
-  report before comparing them. See [Benchmarking `GetOrders`](#benchmarking-getorders).
+  allocation-bound long before they are transport-bound. The client no longer reports allocation or
+  GC figures - see [Memory metrics](#memory-metrics) - so this has to be taken on trust.
+  See [Benchmarking `GetOrders`](#benchmarking-getorders).
 - **32 GB is not enough memory to run the whole `GetOrders` matrix.** `grpc` has a working-set cliff
   between `-c 10` and `-c 20`: 0.30 GB at `-c 10` against 19.6 GB at `-c 20`, and 19-23 GB above
-  that. Halving the batch size barely helps, so those cells are recorded as **not measurable**
+  that. Reducing the batch size barely helps, so those cells are recorded as **not measurable**
   rather than filled with numbers contaminated by swapping. See the
-  [`GetOrders` findings](#batch-findings).
+  [`GetOrders` findings](#batch-findings) and [Memory metrics](#memory-metrics).
 - Both processes use the default workstation GC. Server GC would scale better at high
   concurrency, but switching it would make the `GetOrderById` table above unreproducible with
   the documented commands, so it was left alone.
@@ -166,8 +167,7 @@ Throughput at each concurrency level
 ## Benchmarking `GetOrders`
 
 `-op getorders` switches the harness to the batch operation. The same `-w`, `-d` and `-c` knobs
-apply, and the report gains a **Memory / GC** block on every run (including `getorderbyid`, where
-it is the baseline that makes the batch cost legible).
+apply. The report format is identical to `GetOrderById` - throughput and latency only.
 
 ```bash
 Bench.Client -target grpc -op getorders -w 10 -d 60 -c 4
@@ -177,11 +177,10 @@ Bench.Client -target wcf  -arg nettcp -op getorders -n 20000 -w 10 -d 60 -c 8
 Things worth knowing before you compare the numbers:
 
 - **The client allocates about 1.5 KB of managed heap per order.** At the default 10,000 orders
-  that is ~15 MB per call, per worker, on top of the server. Check the **Memory / GC** block
-  first: a run showing hundreds of MB allocated and dozens of gen2 collections is
-  allocation-bound, and its throughput is mostly a statement about the deserializer, not the
-  wire. For reference, `grpc` at `-c 2` / 10,000 orders allocates ~690 MB in 3 s and
-  `basichttp` allocates more, because it first has to build 11.6 MB of XML.
+  that is ~15 MB per call, per worker, on top of the server, so these runs are allocation-bound
+  long before they are transport-bound and their throughput is mostly a statement about the
+  deserializer rather than the wire. The client no longer reports allocation or GC counts - see
+  [Memory metrics](#memory-metrics) - so this has to be taken on trust.
 - **Latency includes full deserialization.** The harness times the whole call, which is the
   user-visible cost, but it is not a pure transport measurement.
 - **A 10,000 order response is 2.6 MB over protobuf and 11.6 MB over SOAP 1.1.** The gRPC
@@ -190,20 +189,9 @@ Things worth knowing before you compare the numbers:
 - **The client asserts the response length.** It resolves the expected count with the same
   `OrderData.ResolveCount` the server uses, so a clamped or truncated response is counted as a
   failure instead of quietly producing a wrong throughput.
-- **Start lower than you would for `GetOrderById`.** `-c 100` at 10,000 orders is roughly
-  1.4 GB of client working set, and `-c 100` is where the single-order benchmark peaked. The
-  client prints an advisory estimate above 1 GB, but it is only a guess; the report's Peak WS
-  is the figure to trust.
-- **Peak WS is the kernel's high-water mark for the process**, taken from
-  `getrusage(RUSAGE_SELF).ru_maxrss`. It covers the whole process lifetime, so it includes
-  start-up, JIT and the warm-up pass rather than the measured window alone. It was previously
-  read from `Process.PeakWorkingSet64`, which returns 0 on macOS and so printed `Peak WS : 0 B`
-  for every run; that property is correct on Windows and is still used there. Note the unit
-  trap: `ru_maxrss` is bytes on the Darwin family but kilobytes on Linux.
-- **Treat the working-set estimate above as optimistic.** Measured on the batch operation at
-  1,000 orders, gRPC peaks at 92 MB at `-c 1`, 150-168 MB at `-c 10`, and then jumps to
-  6-8 GB at `-c 20` — a cliff well past what `concurrency x orders x 1.5 KB` predicts. The
-  advisory estimate will not warn you about that step.
+- **Start lower than you would for `GetOrderById`.** The batch operation needs far more memory per
+  worker than the single-order one, and the advisory estimate the client prints above 1 GB is
+  optimistic by a wide margin - see [Memory metrics](#memory-metrics).
 - **The client sizes the thread pool from `-c` before starting the workers.** Each worker holds a
   pool thread across the synchronous part of its call, and the pool's hill-climbing injector only
   adds about one thread per 500 ms. Left at the default, `-c 100` on the batch operation produced a
@@ -215,6 +203,7 @@ Things worth knowing before you compare the numbers:
   ~150 MB). A bloated server changes what the client is competing with, and because gRPC is swept
   first at each concurrency level it inherited the worst of it.
 
+ 
 ## `GetOrders` results
 
 1,000 orders per call, `-w 10 -d 60`, same sweep as above. **Zero failed calls across the 23 runs
@@ -231,40 +220,41 @@ this machine - see finding 3 below.
 | 80 | **464** | n/a | 384 | 368 |
 | 100 | **442** | n/a | 365 | 330 |
 
-Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for orders/s.
+Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for orders/s. The client
+reports latency and throughput only - see [Memory metrics](#memory-metrics) for why.
 
-### Raw data with memory
+### Raw data
 
-| Transport | Conc. | Throughput | p50 | p90 | p95 | p99 | mean | max | Allocated | Peak WS |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `nettcp` | 1 | 468 req/s | 1.998 | 2.701 | 2.740 | 2.936 | 2.137 | 4.050 | 42.6 GB | 0.10 GB |
-| `grpc` | 1 | 907 req/s | 0.996 | 1.391 | 1.947 | 2.043 | 1.102 | 18.894 | 66.4 GB | 0.09 GB |
-| `basichttp` | 1 | 243 req/s | 3.997 | 4.553 | 4.668 | 4.981 | 4.110 | 30.199 | 44.5 GB | 0.11 GB |
-| `wshttp` | 1 | 203 req/s | 4.660 | 6.919 | 7.116 | 7.688 | 4.931 | 21.459 | 37.1 GB | 0.12 GB |
-| `nettcp` | 10 | 1,287 req/s | 7.237 | 11.778 | 12.912 | 16.500 | 7.769 | 41.303 | 117.1 GB | 0.16 GB |
-| `grpc` | 10 | 1,294 req/s | 6.864 | 14.122 | 16.627 | 21.787 | 7.725 | 35.210 | 94.8 GB | 0.30 GB |
-| `basichttp` | 10 | 821 req/s | 11.680 | 17.799 | 19.332 | 22.885 | 12.186 | 34.553 | 149.9 GB | 0.26 GB |
-| `wshttp` | 10 | 715 req/s | 13.486 | 20.076 | 21.809 | 26.194 | 13.977 | 41.623 | 130.9 GB | 0.25 GB |
-| `nettcp` | 20 | 764 req/s | 22.512 | 44.976 | 55.177 | 74.139 | 26.177 | 134.827 | 69.5 GB | 0.47 GB |
-| `grpc` | 20 | **not measurable** | | | | | | | | — | — |
-| `basichttp` | 20 | 612 req/s | 29.409 | 54.029 | 65.088 | 83.093 | 32.681 | 142.247 | 111.8 GB | 0.69 GB |
-| `wshttp` | 20 | 564 req/s | 32.764 | 56.253 | 65.584 | 81.304 | 35.440 | 123.405 | 103.2 GB | 0.68 GB |
-| `nettcp` | 40 | 548 req/s | 61.491 | 139.312 | 169.611 | 229.104 | 72.959 | 353.332 | 49.9 GB | 1.28 GB |
-| `grpc` | 40 | **not measurable** | | | | | | | | — | — |
-| `basichttp` | 40 | 441 req/s | 79.193 | 164.476 | 193.955 | 252.551 | 90.610 | 424.616 | 80.7 GB | 1.39 GB |
-| `wshttp` | 40 | 417 req/s | 84.287 | 169.796 | 199.447 | 256.952 | 95.750 | 411.279 | 76.5 GB | 1.42 GB |
-| `nettcp` | 60 | 505 req/s | 98.649 | 238.889 | 286.350 | 375.793 | 118.764 | 858.652 | 46.0 GB | 1.22 GB |
-| `grpc` | 60 | **not measurable** | | | | | | | | — | — |
-| `basichttp` | 60 | 408 req/s | 129.353 | 274.292 | 316.910 | 403.411 | 147.000 | 646.182 | 74.6 GB | 1.29 GB |
-| `wshttp` | 60 | 383 req/s | 138.326 | 288.253 | 339.537 | 433.581 | 156.541 | 835.753 | 70.3 GB | 2.63 GB |
-| `nettcp` | 80 | 464 req/s | 141.973 | 355.656 | 424.242 | 545.885 | 172.472 | 923.853 | 42.2 GB | 1.26 GB |
-| `grpc` | 80 | **not measurable** | | | | | | | | — | — |
-| `basichttp` | 80 | 384 req/s | 183.925 | 402.884 | 467.299 | 600.399 | 208.051 | 999.284 | 70.3 GB | 1.96 GB |
-| `wshttp` | 80 | 368 req/s | 194.376 | 406.046 | 469.866 | 590.918 | 217.232 | 933.886 | 67.4 GB | 1.47 GB |
-| `nettcp` | 100 | 442 req/s | 183.169 | 479.509 | 578.293 | 776.474 | 226.297 | 1352.488 | 40.3 GB | 5.02 GB |
-| `grpc` | 100 | **not measurable** | | | | | | | | — | — |
-| `basichttp` | 100 | 365 req/s | 239.772 | 540.405 | 625.598 | 803.603 | 273.827 | 1315.095 | 66.8 GB | 1.75 GB |
-| `wshttp` | 100 | 330 req/s | 270.641 | 568.275 | 659.834 | 830.096 | 302.762 | 1578.572 | 60.5 GB | 2.14 GB |
+| Transport | Conc. | Throughput | p50 | p90 | p95 | p99 | mean | max |
+|---|---|---|---|---|---|---|---|---|
+| `nettcp` | 1 | 468 req/s | 1.998 | 2.701 | 2.740 | 2.936 | 2.137 | 4.050 |
+| `grpc` | 1 | 907 req/s | 0.996 | 1.391 | 1.947 | 2.043 | 1.102 | 18.894 |
+| `basichttp` | 1 | 243 req/s | 3.997 | 4.553 | 4.668 | 4.981 | 4.110 | 30.199 |
+| `wshttp` | 1 | 203 req/s | 4.660 | 6.919 | 7.116 | 7.688 | 4.931 | 21.459 |
+| `nettcp` | 10 | 1,287 req/s | 7.237 | 11.778 | 12.912 | 16.500 | 7.769 | 41.303 |
+| `grpc` | 10 | 1,294 req/s | 6.864 | 14.122 | 16.627 | 21.787 | 7.725 | 35.210 |
+| `basichttp` | 10 | 821 req/s | 11.680 | 17.799 | 19.332 | 22.885 | 12.186 | 34.553 |
+| `wshttp` | 10 | 715 req/s | 13.486 | 20.076 | 21.809 | 26.194 | 13.977 | 41.623 |
+| `nettcp` | 20 | 764 req/s | 22.512 | 44.976 | 55.177 | 74.139 | 26.177 | 134.827 |
+| `grpc` | 20 | **not measurable** |  |  |  |  |  |  |
+| `basichttp` | 20 | 612 req/s | 29.409 | 54.029 | 65.088 | 83.093 | 32.681 | 142.247 |
+| `wshttp` | 20 | 564 req/s | 32.764 | 56.253 | 65.584 | 81.304 | 35.440 | 123.405 |
+| `nettcp` | 40 | 548 req/s | 61.491 | 139.312 | 169.611 | 229.104 | 72.959 | 353.332 |
+| `grpc` | 40 | **not measurable** |  |  |  |  |  |  |
+| `basichttp` | 40 | 441 req/s | 79.193 | 164.476 | 193.955 | 252.551 | 90.610 | 424.616 |
+| `wshttp` | 40 | 417 req/s | 84.287 | 169.796 | 199.447 | 256.952 | 95.750 | 411.279 |
+| `nettcp` | 60 | 505 req/s | 98.649 | 238.889 | 286.350 | 375.793 | 118.764 | 858.652 |
+| `grpc` | 60 | **not measurable** |  |  |  |  |  |  |
+| `basichttp` | 60 | 408 req/s | 129.353 | 274.292 | 316.910 | 403.411 | 147.000 | 646.182 |
+| `wshttp` | 60 | 383 req/s | 138.326 | 288.253 | 339.537 | 433.581 | 156.541 | 835.753 |
+| `nettcp` | 80 | 464 req/s | 141.973 | 355.656 | 424.242 | 545.885 | 172.472 | 923.853 |
+| `grpc` | 80 | **not measurable** |  |  |  |  |  |  |
+| `basichttp` | 80 | 384 req/s | 183.925 | 402.884 | 467.299 | 600.399 | 208.051 | 999.284 |
+| `wshttp` | 80 | 368 req/s | 194.376 | 406.046 | 469.866 | 590.918 | 217.232 | 933.886 |
+| `nettcp` | 100 | 442 req/s | 183.169 | 479.509 | 578.293 | 776.474 | 226.297 | 1352.488 |
+| `grpc` | 100 | **not measurable** |  |  |  |  |  |  |
+| `basichttp` | 100 | 365 req/s | 239.772 | 540.405 | 625.598 | 803.603 | 273.827 | 1315.095 |
+| `wshttp` | 100 | 330 req/s | 270.641 | 568.275 | 659.834 | 830.096 | 302.762 | 1578.572 |
 
 ### Batch findings
 
@@ -370,26 +360,4 @@ dotnet-svcutil http://localhost:5000/NorthwindWcfService/basic?wsdl \
   -ser DataContractSerializer \
   -r Bench.Client.csproj
 ```
-
-Three things to know before running it:
-
-- **The WCF server must already be running** (`Bench.Server -target wcf`), since the WSDL is fetched
-  over HTTP.
-- **`-o NorthwindServiceClient.cs` is required.** Without it `svcutil` 8.0.0 names the output
-  `Reference.cs` and leaves the real proxy stale.
-- **`svcutil` refuses to overwrite an existing output file, and `-r` makes it build
-  `Bench.Client` first** to resolve the shared DataContract types. So keep the old proxy in place
-  while regenerating; deleting it first makes the project fail to compile (`WcfPerf` needs the
-  proxy) and `svcutil` aborts. Move it aside, run the command, then replace it.
-
-`-r` is what keeps the generated file free of duplicated DataContract types: `Order`, `Customer`,
-`OrderDetail`, `OrderRequest`, `OrdersRequest` and `OrdersResponse` are linked in from
-`Bench.Server` via
-`<Compile Include>` and referenced by namespace. Any new DataContract on the server must be added
-to that list, otherwise `svcutil` re-declares a private copy of it inside the proxy.
-
-Note that `svcutil` also offers to inject `System.ServiceModel.Duplex` / `.Security` /
-`.Federation` at floating `4.10.*` versions and to rewrite this file's formatting. Neither was
-kept: the project builds without them, and floating versions work against the pinned
-`10.0.652802` packages that the benchmark results depend on.
-
+ 
