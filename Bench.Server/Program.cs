@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 string? target = null;
 for (var i = 0; i < args.Length; i++) {
@@ -65,6 +66,7 @@ async Task<int> RunWcfAsync() {
     var builder = WebApplication.CreateBuilder(args);
     builder.Services.AddServiceModelServices().AddServiceModelMetadata();
     builder.Services.AddSingleton<IServiceBehavior, UseRequestHeadersForMetadataAddressBehavior>();
+    builder.Logging.SetMinimumLevel(LogLevel.Warning); 
 
     // HTTP endpoints are configured via ConfigureKestrel (avoids the UseNetTcp-vs-UseUrls collision
     // where UseNetTcp would override URL-based config and break CoreWCF base-address resolution).
@@ -109,6 +111,7 @@ async Task<int> RunGrpcAsync() {
     Console.WriteLine("Starting gRPC service...");
 
     var builder = WebApplication.CreateBuilder(args);
+    builder.Logging.SetMinimumLevel(LogLevel.Warning); 
     builder.WebHost.ConfigureKestrel(options => {
         options.ListenAnyIP(5003, o => o.Protocols = HttpProtocols.Http2);
     });

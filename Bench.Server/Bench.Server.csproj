@@ -6,6 +6,14 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <RootNamespace>Bench</RootNamespace>
+
+        <!-- Server GC is what a real ASP.NET Core / gRPC host gets by default, because those
+             projects use Microsoft.NET.Sdk.Web. This project uses the plain SDK, so without this
+             it would silently fall back to workstation GC and the server would not resemble a
+             production deployment. Set explicitly so the benchmark measures what it claims to.
+             It applies to both targets equally: -target wcf and -target grpc are the same
+             executable, so the WCF-vs-gRPC comparison stays symmetric. -->
+        <ServerGarbageCollection>true</ServerGarbageCollection>
     </PropertyGroup>
 
     <ItemGroup>
