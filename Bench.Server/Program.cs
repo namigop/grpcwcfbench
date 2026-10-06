@@ -4,6 +4,7 @@
 //   Bench.Server -target wcf    Starts the WCF service on BasicHttp (:5000), WSHttp/HTTPS (:5001), and NetTcp (:5002)
 //   Bench.Server -target grpc   Starts the gRPC service on HTTP/2 cleartext (:5003)
 
+using Bench;
 using Bench.grpc;
 using Bench.wcf;
 using CoreWCF;
@@ -74,6 +75,7 @@ async Task<int> RunWcfAsync() {
         options.ListenLocalhost(5000);             // HTTP/1.1 for WCF BasicHttp
         options.ListenLocalhost(5001, o => o.UseHttps()); // HTTPS for WCF WSHttp
     });
+    builder.Services.AddHostedService<GcSampler>();
     // UseNetTcp with the explicit options form registers a net.tcp base address and opens the TCP listener,
     // without overriding the Kestrel endpoints configured above.
     builder.WebHost.UseNetTcp(options => {
@@ -104,6 +106,7 @@ async Task<int> RunWcfAsync() {
     Console.WriteLine("  NetTcp     : net.tcp://localhost:5002/NorthwindWcfService/nettcp");
 
     await app.RunAsync();
+    GcReport.Print($"final-{DateTime.UtcNow}");
     return 0;
 }
 
@@ -116,6 +119,7 @@ async Task<int> RunGrpcAsync() {
         options.ListenAnyIP(5003, o => o.Protocols = HttpProtocols.Http2);
     });
     builder.Services.AddGrpc();
+    builder.Services.AddHostedService<GcSampler>();
 
     var app = builder.Build();
     app.MapGrpcService<NorthwindGrpcService>();
@@ -123,5 +127,6 @@ async Task<int> RunGrpcAsync() {
     Console.WriteLine("  gRPC (HTTP/2) : http://localhost:5003");
 
     await app.RunAsync();
+    GcReport.Print($"final-{DateTime.UtcNow}");
     return 0;
 }
