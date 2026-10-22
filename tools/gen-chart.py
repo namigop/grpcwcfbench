@@ -55,9 +55,14 @@ def collect(rows):
     total_calls = 0
     total_failed = 0
     runs = 0
+    op = None
     for r in rows:
         t = r["transport"]
         c = int(r["conc"])
+        if op is None:
+            op = r["op"]
+        elif r["op"] != op:
+            raise SystemExit("mixed ops in one TSV: %r and %r" % (op, r["op"]))
         if t not in out:
             raise SystemExit("unexpected transport %r" % t)
         if c not in out[t]:
@@ -77,7 +82,7 @@ def collect(rows):
         for c in CONC:
             if not out[t][c]:
                 raise SystemExit("missing run: %s @ c=%d" % (t, c))
-    return out, total_calls, total_failed, runs
+    return out, total_calls, total_failed, runs, op
 
 
 def build_data(series):
@@ -125,8 +130,8 @@ HTML = """<!DOCTYPE html>
   <div class="head">
     <div>
       <p class="kicker">CoreWCF vs gRPC &middot; .NET 10 &middot; Apple M4</p>
-      <h1>GetOrderById &mdash; throughput and tail latency</h1>
-      <p class="sub">__RUNS__ runs &middot; __CALLS__ calls &middot; __FAILED__ failed &middot; 60&nbsp;s per run</p>
+      <h1>__TITLE__</h1>
+      <p class="sub">__SUBTITLE__ &middot; __RUNS__ runs &middot; __CALLS__ calls &middot; __FAILED__ failed &middot; 60&nbsp;s per run</p>
     </div>
     <div class="legend">__LEGEND__</div>
   </div>
@@ -144,7 +149,7 @@ HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <p class="foot">The concurrency axis is linear, so the shape shows where the server saturates: throughput climbs steeply to c=10 and then flattens past c=20. Every point is a measured run, read straight from the benchmark TSV.</p>
+  <p class="foot">__FOOTNOTE__ Every point is a measured run, read straight from the benchmark TSV.</p>
 </div>
 
 <script src="__CHARTJS__"></script>
@@ -213,10 +218,27 @@ function makeLine(id, key, yTitle, yOpts, fmt){
 }
 
 makeLine('tp','tp','req/s', { beginAtZero:true }, v => nf(v) + ' req/s');
+
+// Log-scale ticks have to follow the data: the single-order p99 spans 0.1-6 ms while the
+// batch p99 spans 2-255 ms, so a fixed tick list would fall outside the axis.
+function logTicks(key){
+  const vals = ORDER.flatMap(t => DATA[key][t]);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const out = [];
+  for (let d = Math.floor(Math.log10(lo)); d <= Math.ceil(Math.log10(hi)); d++) {
+    for (const m of [1, 2, 5]) {
+      const v = m * Math.pow(10, d);
+      if (v >= lo * 0.8 && v <= hi * 1.25) out.push(v);
+    }
+  }
+  return out;
+}
+const fmtMs = v => (Number.isInteger(v) ? String(v) : String(v)) + ' ms';
+
 makeLine('p99','p99','p99 latency (ms)',
   { type:'logarithmic', beginAtZero:false,
-    afterBuildTicks:(ax)=>{ ax.ticks=[0.1,0.2,0.5,1,2,5,10].map(v=>({value:v})); },
-    ticks:{ callback:v => String(v) + ' ms' } },
+    afterBuildTicks:(ax)=>{ ax.ticks=logTicks('p99').map(v=>({value:v})); },
+    ticks:{ callback:v => fmtMs(v) } },
   v => v.toFixed(3) + ' ms');
 </script>
 </body>
@@ -230,11 +252,36 @@ def main():
     ap.add_argument("--html", default="/tmp/chart.html")
     ap.add_argument("--png", default="docs/getorderbyid.png")
     ap.add_argument("--scale", type=float, default=2.0)
+    ap.add_argument("--orders", default="1,000", help="batch size, for the chart subtitle")
+    ap.add_argument("--title", default=None, help="override the chart title")
     args = ap.parse_args()
 
     rows = read_tsv(args.tsv)
-    series, calls, failed, runs = collect(rows)
+    series, calls, failed, runs, op = collect(rows)
     data = build_data(series)
+
+    if args.title:
+        title = args.title
+    elif op == "getorders":
+        title = "GetOrders (n=%s) &mdash; throughput and tail latency" % args.orders
+    else:
+        title = "GetOrderById &mdash; throughput and tail latency"
+
+    if op == "getorders":
+        subtitle = "%s orders per call" % args.orders
+        # Describe the shape from the data, not from a remembered peak.
+        peak_c, peak_v = max(((c, series["grpc"][c]["tp"]) for c in CONC), key=lambda p: p[1])
+        drift = 100 * (1 - series["grpc"][100]["tp"] / peak_v)
+        wcf_flat = all(series[t][100]["tp"] >= series[t][20]["tp"] for t in ("nettcp", "basichttp", "wshttp"))
+        plateau = ("while the three WCF transports hold a flat plateau to the end"
+                   if wcf_flat else "while the three WCF transports stay roughly flat")
+        footnote = ("The concurrency axis is linear, so the shape shows where the server saturates: "
+                    "gRPC peaks at c=%d and then drifts down %.0f%%, %s."
+                    % (peak_c, drift, plateau))
+    else:
+        subtitle = "one order per call"
+        footnote = ("The concurrency axis is linear, so the shape shows where the server saturates: "
+                    "throughput climbs steeply to c=10 and then flattens past c=20.")
 
     legend = "".join(
         '<span class="chip"><span class="dot" style="background:%s"></span>%s</span>' % (COLOR[t], LABEL[t])
@@ -242,7 +289,10 @@ def main():
     )
 
     html = (
-        HTML.replace("__RUNS__", "{:,}".format(runs))
+        HTML.replace("__TITLE__", title)
+        .replace("__SUBTITLE__", subtitle)
+        .replace("__FOOTNOTE__", footnote)
+        .replace("__RUNS__", "{:,}".format(runs))
         .replace("__CALLS__", "{:,}".format(calls))
         .replace("__FAILED__", "{:,}".format(failed))
         .replace("__LEGEND__", legend)

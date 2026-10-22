@@ -210,17 +210,21 @@ Things worth knowing before you compare the numbers:
 ## `GetOrders` results
 
 1,000 orders per call, `-w 10 -d 60`, same sweep as above. **Zero failed calls across all 28 runs**
-(3,210,299 successful calls).
+(3,058,967 successful calls).
+
+Throughput and p99 tail latency at each concurrency level
+
+![GetOrders throughput and p99 latency across 7 concurrency levels](./docs/getorders.png)
 
 | Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
 |---|---|---|---|---|
-| 1 | 445 | **919** | 233 | 213 |
-| 10 | 1,800 | **4,914** | 1,009 | 818 |
-| 20 | 1,925 | **5,180** | 1,054 | 839 |
-| 40 | 1,969 | **4,971** | 1,059 | 854 |
-| 60 | 1,982 | **4,763** | 1,043 | 852 |
-| 80 | 1,947 | **4,597** | 1,047 | 850 |
-| 100 | 1,957 | **4,324** | 1,067 | 854 |
+| 1 | 444 | **934** | 228 | 204 |
+| 10 | 1,736 | **4,694** | 922 | 746 |
+| 20 | 1,817 | **4,682** | 994 | 770 |
+| 40 | 1,880 | **4,689** | 1,002 | 803 |
+| 60 | 1,878 | **4,473** | 1,005 | 802 |
+| 80 | 1,917 | **4,388** | 1,025 | 814 |
+| 100 | 1,934 | **4,350** | 1,020 | 816 |
 
 Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for orders/s.
 
@@ -228,41 +232,41 @@ Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for 
 
 | Transport | Conc. | Throughput | p50 | p90 | p95 | p99 | mean | max |
 |---|---|---|---|---|---|---|---|---|
-| `nettcp` | 1 | 445 req/s | 2.136 | 2.288 | 2.458 | 4.534 | 2.248 | 18.559 |
-| `grpc` | 1 | 919 req/s | 1.048 | 1.154 | 1.239 | 1.956 | 1.088 | 15.389 |
-| `basichttp` | 1 | 233 req/s | 4.092 | 5.101 | 5.496 | 6.779 | 4.301 | 17.965 |
-| `wshttp` | 1 | 213 req/s | 4.438 | 5.670 | 6.074 | 7.322 | 4.691 | 28.357 |
-| `nettcp` | 10 | 1,800 req/s | 4.740 | 8.870 | 10.630 | 15.090 | 5.554 | 64.339 |
-| `grpc` | 10 | 4,914 req/s | 1.869 | 2.508 | 3.017 | 5.766 | 2.035 | 104.749 |
-| `basichttp` | 10 | 1,009 req/s | 9.085 | 14.452 | 16.395 | 21.009 | 9.904 | 71.320 |
-| `wshttp` | 10 | 818 req/s | 11.425 | 17.362 | 19.682 | 26.314 | 12.222 | 68.931 |
-| `nettcp` | 20 | 1,925 req/s | 9.114 | 16.826 | 20.495 | 30.875 | 10.391 | 119.081 |
-| `grpc` | 20 | 5,180 req/s | 3.556 | 5.273 | 6.119 | 9.474 | 3.861 | 32.353 |
-| `basichttp` | 20 | 1,054 req/s | 16.909 | 30.229 | 36.342 | 53.768 | 18.970 | 132.278 |
-| `wshttp` | 20 | 839 req/s | 21.583 | 36.698 | 43.263 | 60.925 | 23.838 | 170.396 |
-| `nettcp` | 40 | 1,969 req/s | 18.277 | 32.234 | 39.443 | 60.253 | 20.318 | 170.086 |
-| `grpc` | 40 | 4,971 req/s | 7.026 | 12.255 | 14.110 | 23.252 | 8.047 | 45.110 |
-| `basichttp` | 40 | 1,059 req/s | 33.386 | 61.327 | 76.077 | 113.012 | 37.743 | 299.726 |
-| `wshttp` | 40 | 854 req/s | 43.822 | 69.546 | 81.292 | 112.891 | 46.814 | 234.820 |
-| `nettcp` | 60 | 1,982 req/s | 27.262 | 47.736 | 57.219 | 87.522 | 30.268 | 252.046 |
-| `grpc` | 60 | 4,763 req/s | 10.720 | 19.683 | 23.770 | 36.944 | 12.597 | 60.956 |
-| `basichttp` | 60 | 1,043 req/s | 51.465 | 91.972 | 111.965 | 164.545 | 57.522 | 359.591 |
-| `wshttp` | 60 | 852 req/s | 67.102 | 102.088 | 117.530 | 157.513 | 70.359 | 328.733 |
-| `nettcp` | 80 | 1,947 req/s | 37.330 | 64.529 | 77.773 | 114.437 | 41.061 | 256.861 |
-| `grpc` | 80 | 4,597 req/s | 14.791 | 27.309 | 34.450 | 48.456 | 17.400 | 77.749 |
-| `basichttp` | 80 | 1,047 req/s | 71.844 | 112.958 | 131.631 | 182.330 | 76.337 | 386.171 |
-| `wshttp` | 80 | 850 req/s | 89.498 | 135.957 | 156.049 | 204.722 | 94.046 | 408.195 |
-| `nettcp` | 100 | 1,957 req/s | 46.552 | 79.266 | 94.551 | 135.603 | 51.078 | 330.016 |
-| `grpc` | 100 | 4,324 req/s | 19.889 | 36.300 | 43.910 | 60.011 | 23.114 | 106.532 |
-| `basichttp` | 100 | 1,067 req/s | 88.216 | 139.165 | 160.951 | 213.699 | 93.692 | 413.856 |
-| `wshttp` | 100 | 854 req/s | 113.656 | 164.910 | 185.014 | 236.020 | 117.055 | 416.081 |
+| `nettcp` | 1 | 444 req/s | 2.128 | 2.375 | 2.465 | 5.144 | 2.254 | 27.479 |
+| `grpc` | 1 | 934 req/s | 1.017 | 1.181 | 1.312 | 2.009 | 1.070 | 9.719 |
+| `basichttp` | 1 | 228 req/s | 4.137 | 5.273 | 5.859 | 7.403 | 4.391 | 25.549 |
+| `wshttp` | 1 | 204 req/s | 4.559 | 5.947 | 6.733 | 8.936 | 4.896 | 29.355 |
+| `nettcp` | 10 | 1,736 req/s | 4.855 | 9.339 | 11.255 | 16.266 | 5.760 | 50.305 |
+| `grpc` | 10 | 4,694 req/s | 1.940 | 2.643 | 3.367 | 6.330 | 2.130 | 39.134 |
+| `basichttp` | 10 | 922 req/s | 9.761 | 16.122 | 18.629 | 26.675 | 10.847 | 134.948 |
+| `wshttp` | 10 | 746 req/s | 12.307 | 19.464 | 22.516 | 31.390 | 13.397 | 82.683 |
+| `nettcp` | 20 | 1,817 req/s | 9.366 | 18.698 | 23.235 | 37.112 | 11.005 | 129.204 |
+| `grpc` | 20 | 4,682 req/s | 3.858 | 5.955 | 7.171 | 10.988 | 4.271 | 52.088 |
+| `basichttp` | 20 | 994 req/s | 17.279 | 33.606 | 41.731 | 64.480 | 20.113 | 169.685 |
+| `wshttp` | 20 | 770 req/s | 23.085 | 41.090 | 49.242 | 71.305 | 25.979 | 195.033 |
+| `nettcp` | 40 | 1,880 req/s | 18.606 | 35.169 | 43.014 | 65.812 | 21.270 | 175.177 |
+| `grpc` | 40 | 4,689 req/s | 7.411 | 12.930 | 15.022 | 24.561 | 8.530 | 65.420 |
+| `basichttp` | 40 | 1,002 req/s | 34.350 | 68.228 | 84.825 | 124.953 | 39.910 | 254.826 |
+| `wshttp` | 40 | 803 req/s | 45.867 | 76.392 | 90.085 | 128.511 | 49.803 | 261.962 |
+| `nettcp` | 60 | 1,878 req/s | 28.303 | 51.852 | 63.255 | 95.853 | 31.937 | 212.789 |
+| `grpc` | 60 | 4,473 req/s | 11.433 | 20.790 | 25.253 | 39.326 | 13.410 | 92.394 |
+| `basichttp` | 60 | 1,005 req/s | 53.533 | 96.330 | 117.197 | 164.164 | 59.677 | 388.206 |
+| `wshttp` | 60 | 802 req/s | 71.736 | 105.511 | 119.891 | 156.380 | 74.829 | 326.092 |
+| `nettcp` | 80 | 1,917 req/s | 37.585 | 66.350 | 80.570 | 117.231 | 41.714 | 284.457 |
+| `grpc` | 80 | 4,388 req/s | 15.559 | 28.600 | 36.895 | 50.911 | 18.231 | 137.239 |
+| `basichttp` | 80 | 1,025 req/s | 71.806 | 123.902 | 146.518 | 199.756 | 78.047 | 396.334 |
+| `wshttp` | 80 | 814 req/s | 94.668 | 137.453 | 156.465 | 203.595 | 98.269 | 367.045 |
+| `nettcp` | 100 | 1,934 req/s | 46.910 | 81.489 | 96.463 | 137.275 | 51.682 | 406.624 |
+| `grpc` | 100 | 4,350 req/s | 19.687 | 36.110 | 44.743 | 60.556 | 22.985 | 133.113 |
+| `basichttp` | 100 | 1,020 req/s | 92.204 | 143.550 | 167.016 | 225.418 | 97.969 | 412.973 |
+| `wshttp` | 100 | 816 req/s | 117.893 | 174.123 | 197.075 | 254.869 | 122.566 | 424.045 |
 
 ### Batch findings
 
-1. **`grpc` wins this operation at every concurrency level.** 919 req/s against `nettcp`'s 445 at
-   `-c 1` (2.1x), 5,180 against 1,925 at the `-c 20` peak (2.7x), and 4,324 against 1,957 at `-c 100`
+1. **`grpc` wins this operation at every concurrency level.** 934 req/s against `nettcp`'s 444 at
+   `-c 1` (2.1x), 4,682 against 1,817 at `-c 20` (2.6x), and 4,350 against 1,934 at `-c 100`
    (2.2x). Against the SOAP transports the margin is much wider: at `-c 100`, `basichttp` manages
-   1,067 and `wshttp` 854, so gRPC is 4.1x and 5.1x.
+   1,020 and `wshttp` 816, so gRPC is 4.3x and 5.3x.
 
 2. **The ranking flips between the two operations, and payload size is why.** On `GetOrderById`,
    `nettcp` leads gRPC at every level - by 27% at `-c 1`, 6.2% at `-c 10`, and a steady 3.0-4.4% from
@@ -275,15 +279,15 @@ Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for 
 3. **Payload size accounts for most of the gap, and `nettcp`'s 2nd place is partly borrowed.**
    Measured response bytes are in [Service methods](#service-methods): at 1,000 orders protobuf
    carries 264 KB, net.tcp binary XML 324 KB, and either SOAP transport 1.15 MB. Multiplying payload
-   by measured throughput at the `-c 20` peak gives the rate at which each transport actually moves
+   by measured throughput at `-c 20` gives the rate at which each transport actually moves
    data:
 
    | Transport | req/s @ c=20 | Payload | Payload moved |
    |---|---|---|---|
-   | `grpc` | 5,180 | 263,626 B | **1.37 GB/s** |
-   | `nettcp` | 1,925 | 323,785 B | 0.62 GB/s |
-   | `basichttp` | 1,054 | 1,154,714 B | **1.22 GB/s** |
-   | `wshttp` | 839 | 1,154,948 B | 0.97 GB/s |
+   | `grpc` | 4,682 | 263,626 B | **1.23 GB/s** |
+   | `nettcp` | 1,817 | 323,785 B | 0.59 GB/s |
+   | `basichttp` | 994 | 1,154,714 B | **1.15 GB/s** |
+   | `wshttp` | 770 | 1,154,948 B | 0.89 GB/s |
 
    Two things fall out. gRPC wins on *both* axes, which the req/s table alone does not show. And
    `basichttp` moves **twice as many bytes per second as `nettcp`** despite being a little over half
@@ -291,16 +295,16 @@ Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for 
    while net.tcp's compact binary XML does not buy it a faster encoder. `nettcp`'s 2nd place is
    therefore partly a smaller payload rather than purely a faster stack.
 
-4. **gRPC is the only transport that loses throughput as concurrency rises.** It peaks at `-c 20`
-   with 5,180 req/s and decays 17% to 4,324 by `-c 100`, while the three WCF transports hold a flat
-   plateau over the same range, all ending slightly *above* their own c=20 value: `nettcp` 1,925 ->
-   1,957, `basichttp` 1,054 -> 1,067, `wshttp` 839 -> 854. Past about 20 workers every response is
+4. **gRPC is the only transport that loses throughput as concurrency rises.** It peaks at `-c 10`
+   with 4,694 req/s and decays 7% to 4,350 by `-c 100`, while the three WCF transports hold a flat
+   plateau over the same range, all ending above their own c=20 value: `nettcp` 1,817 -> 1,934,
+   `basichttp` 994 -> 1,020, `wshttp` 770 -> 816. Past about 10 workers every response is
    large enough that the server's serializer, not the queue, is the ceiling - extra concurrency only
    deepens the backlog.
 
-5. **gRPC has the best tail latency at every level.** At `-c 100` its p99 is 60.0 ms against
-   `nettcp`'s 135.6, `basichttp`'s 213.7 and `wshttp`'s 236.0. Its `max` never exceeds 106.5 ms
-   anywhere in the sweep, while `basichttp` reaches 413.9 ms and `wshttp` 416.1 ms.
+5. **gRPC has the best tail latency at every level.** At `-c 100` its p99 is 60.6 ms against
+   `nettcp`'s 137.3, `basichttp`'s 225.4 and `wshttp`'s 254.9. Its `max` never exceeds 137.2 ms
+   anywhere in the sweep, while `nettcp` reaches 406.6 ms, `basichttp` 413.0 ms and `wshttp` 424.0 ms.
 
 
 ### Larger batch: 10,000 orders per call
@@ -389,11 +393,30 @@ the image cannot drift from the measured data:
 
 ```bash
 python3 tools/gen-chart.py <results.tsv> --html /tmp/chart.html --png docs/getorderbyid.png
+python3 tools/gen-chart.py <results.tsv> --orders 1,000 --html /tmp/chart.html --png docs/getorders.png
 ```
 
 The TSV is tab separated, one row per run, with the columns
 `op transport conc success failed elapsed_s throughput min_ms mean_ms p50_ms p90_ms p95_ms p99_ms max_ms`.
 The script reads every number it plots out of that file, so nothing in the chart is typed by hand.
+
+## Verifying the published numbers
+
+Every figure and every numeric claim in the findings sections is re-derived from the measured TSVs
+by the scripts in `tools/`. Nothing in this README is transcribed by hand:
+
+```bash
+python3 tools/mk-table.py throughput <results.tsv>   # render a table from a TSV
+python3 tools/verify_readme.py <ob.tsv> <go.tsv>     # re-derive every published figure
+python3 tools/verify_prose.py  <ob.tsv> <go.tsv>     # recompute every numeric claim in the findings
+python3 tools/verify_payload.py                      # check the payload figures
+python3 tools/verify-chart.py <chart.html> <tsv>     # check a chart against the TSV it was built from
+```
+
+`verify_readme.py` and `verify_prose.py` take the `GetOrderById` TSV first and the `GetOrders` TSV
+second; pass only the first to check the single-order section on its own. `verify_payload.py` checks
+the measured byte counts in `tools/payload.json` against both this document and the `GetOrders`
+table they are quoted next to.
 
 
 ## Regenerating the WCF client

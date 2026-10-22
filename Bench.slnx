@@ -4,6 +4,12 @@
   </Folder>
   <Folder Name="/tools/">
     <File Path="tools/gen-chart.py" />
+    <File Path="tools/mk-table.py" />
+    <File Path="tools/payload.json" />
+    <File Path="tools/verify-chart.py" />
+    <File Path="tools/verify_payload.py" />
+    <File Path="tools/verify_prose.py" />
+    <File Path="tools/verify_readme.py" />
   </Folder>
   <Project Path="Bench.Client/Bench.Client.csproj" />
   <Project Path="Bench.Server\Bench.Server.csproj" />
