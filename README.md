@@ -10,18 +10,13 @@ This benchmark was done as a fun excercise. Be aware of the following caveats
 - The response of the `GetOrderById` method is hardcoded.  There is no additional logic apart from just returning an `Order` instance
 - No finetuning was done on the gRPC or WCF servers
 - The duration of the benchmark is just 60 sec (with a 10 sec warmup time)
-- For `GetOrders` the client allocates roughly 1.5 KB of managed heap per order, so those runs are
-  allocation-bound long before they are transport-bound. The client no longer reports allocation or
-  GC figures - see [Memory metrics](#memory-metrics) - so this has to be taken on trust.
-  See [Benchmarking `GetOrders`](#benchmarking-getorders).
-- **32 GB is not enough memory to run the whole `GetOrders` matrix.** `grpc` has a working-set cliff
-  between `-c 10` and `-c 20`: 0.30 GB at `-c 10` against 19.6 GB at `-c 20`, and 19-23 GB above
-  that. Reducing the batch size barely helps, so those cells are recorded as **not measurable**
-  rather than filled with numbers contaminated by swapping. See the
-  [`GetOrders` findings](#batch-findings) and [Memory metrics](#memory-metrics).
-- Both processes use the default workstation GC. Server GC would scale better at high
-  concurrency, but switching it would make the `GetOrderById` table above unreproducible with
-  the documented commands, so it was left alone.
+- For `GetOrders` the harness measures the whole call including deserialization, so the batch numbers
+  are a statement about the deserializer as much as about the wire.
+- **Both processes run Server GC**, set explicitly in each csproj. Neither project uses
+  `Microsoft.NET.Sdk.Web`, which is what would normally turn Server GC on, so it has to be requested.
+  Every number published here was measured with that configuration.
+- The WCF net.tcp endpoint needs `MaxBufferSize` raised well above the 64 KB default or the batch
+  operation fails outright. See [Notes on the harness](#notes-on-the-harness).
 
 ## Transports compared
 
@@ -54,14 +49,27 @@ gRPC    OrdersResponse { repeated Order orders }
 means "use the server default" of 10,000. Max count is clamped to 1,000,000. The batch is materialised once and cached per process, because
 rebuilding 10,000 orders on every call would measure the allocator rather than the transport.
  
-Measured payload for the 10,000 order batch on .NET 10:
+Measured response payload on .NET 10, straight off the wire:
 
-| Transport                   | Serialized size |
-|-----------------------------|--------------|
-| `grpc` (protobuf)           | ~2.5 MB      |
-| `basichttp` (SOAP 1.1 + XML) | ~11 MB      |
-| `wsHttp` (SOAP 1.1 + XML)   | ~11 MB       |
-| `nettcp`     | ~5.9 MB      |
+| Transport | Encoding | **n = 1,000** | n = 10,000 | bytes/order | vs gRPC |
+|---|---|---|---|---|---|
+| `grpc` | protobuf | **263,626 B** (0.251 MB) | 2,638,546 B | 263.9 | 1.00x |
+| `nettcp` | binary XML | **323,785 B** (0.309 MB) | 3,234,685 B | 323.4 | 1.23x |
+| `basichttp` | SOAP 1.1 XML | **1,154,714 B** (1.101 MB) | 11,565,085 B | 1156.7 | 4.38x |
+| `wshttp` | SOAP 1.2 + WS-Addressing | **1,154,948 B** (1.101 MB) | 11,565,319 B | 1156.7 | 4.38x |
+
+SOAP is **4.4x more verbose than protobuf** and 3.6x more verbose than net.tcp's binary XML. Measured
+four different ways: `curl` reports the exact HTTP body length for the two SOAP transports,
+`CalculateSize()` gives the exact protobuf encoding for gRPC, and a byte-counting TCP proxy measures
+the real net.tcp framing. All four are deterministic - repeated net.tcp runs are byte-identical.
+
+> An earlier version of this table gave `nettcp` as ~5.9 MB. That was an estimate ("about half of
+> SOAP"), never measured, and it was wrong by 1.9x. The 3.09 MB above is measured.
+
+Two things are worth noticing. The two SOAP transports have an **identical** marginal cost -
+1156.71 bytes per order either way, difference 0.0000 - because they share the same
+`DataContract` XML and differ only in a 234-byte WS-Addressing/SOAP 1.2 envelope. And protobuf
+carries essentially no per-message envelope at all, so its size is pure payload.
  
 
 ## Environment
@@ -80,84 +88,90 @@ Measured payload for the 10,000 order batch on .NET 10:
 All results in this section are `GetOrderById`. The batch results are in
 [their own section](#getorders-results).
 
-Throughput at each concurrency level
+Throughput and p99 tail latency at each concurrency level
 
-![Throughput vs Concurrency](./docs/Chart1.png)
+![GetOrderById throughput and p99 latency across 7 concurrency levels](./docs/getorderbyid.png)
 
 
 | Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
 |---|---|---|---|---|
-| 1 | **22,756** | 15,950 | 16,646 | 14,471 |
-| 10 | **82,253** | 75,412 | 59,179 | 51,415 |
-| 20 | **81,628** | 74,928 | 61,618 | 53,607 |
-| 40 | **78,951** | 75,441 | 60,138 | 51,635 |
-| 60 | **76,015** | 73,126 | 57,453 | 49,199 |
-| 80 | **74,621** | 69,009 | 55,093 | 47,945 |
-| 100 | **72,007** | 68,067 | 52,589 | 45,100 |
+| 1 | **22,269** | 17,501 | 19,775 | 17,189 |
+| 10 | **84,837** | 79,872 | 70,989 | 63,376 |
+| 20 | **88,913** | 85,869 | 74,575 | 65,315 |
+| 40 | **91,338** | 88,643 | 77,064 | 68,520 |
+| 60 | **93,129** | 89,527 | 79,398 | 68,814 |
+| 80 | **92,360** | 89,344 | 78,705 | 68,149 |
+| 100 | **92,811** | 88,898 | 78,944 | 67,180 |
 
 
 ### Raw data
 
- **Zero failed calls across all 28 runs** (~97.0M successful requests). Latency in milliseconds.
+**Zero failed calls across all 28 runs** (120,199,172 successful requests). Latency in milliseconds.
 
 | Transport | Conc. | Throughput | p50 | p90 | p95 | p99 | mean | max |
 |---|---|---|---|---|---|---|---|---|
-| `nettcp` | 1 | 22,756 req/s | 0.040 | 0.058 | 0.064 | 0.084 | 0.044 | 6.861 |
-| `grpc` | 1 | 15,950 req/s | 0.060 | 0.080 | 0.087 | 0.107 | 0.063 | 1.432 |
-| `basichttp` | 1 | 16,646 req/s | 0.056 | 0.071 | 0.078 | 0.123 | 0.060 | 3.991 |
-| `wshttp` | 1 | 14,471 req/s | 0.064 | 0.080 | 0.088 | 0.134 | 0.069 | 3.451 |
-| `nettcp` | 10 | 82,253 req/s | 0.103 | 0.126 | 0.138 | 0.704 | 0.121 | 6.097 |
-| `grpc` | 10 | 75,412 req/s | 0.122 | 0.146 | 0.156 | 0.700 | 0.132 | 2.853 |
-| `basichttp` | 10 | 59,179 req/s | 0.128 | 0.161 | 0.191 | 1.118 | 0.169 | 13.779 |
-| `wshttp` | 10 | 51,415 req/s | 0.145 | 0.187 | 0.272 | 1.200 | 0.194 | 12.460 |
-| `nettcp` | 20 | 81,628 req/s | 0.204 | 0.259 | 0.750 | 1.077 | 0.245 | 45.296 |
-| `grpc` | 20 | 74,928 req/s | 0.232 | 0.286 | 0.316 | 1.177 | 0.267 | 10.199 |
-| `basichttp` | 20 | 61,618 req/s | 0.236 | 0.321 | 1.102 | 1.644 | 0.324 | 23.135 |
-| `wshttp` | 20 | 53,607 req/s | 0.266 | 0.436 | 1.225 | 1.867 | 0.373 | 14.005 |
-| `nettcp` | 40 | 78,951 req/s | 0.401 | 1.129 | 1.364 | 1.681 | 0.506 | 73.474 |
-| `grpc` | 40 | 75,441 req/s | 0.458 | 0.607 | 1.290 | 1.890 | 0.530 | 10.730 |
-| `basichttp` | 40 | 60,138 req/s | 0.459 | 1.562 | 1.784 | 2.798 | 0.665 | 19.049 |
-| `wshttp` | 40 | 51,635 req/s | 0.529 | 1.764 | 1.989 | 3.260 | 0.774 | 49.500 |
-| `nettcp` | 60 | 76,015 req/s | 0.610 | 1.653 | 1.867 | 2.387 | 0.789 | 78.272 |
-| `grpc` | 60 | 73,126 req/s | 0.691 | 1.358 | 2.022 | 2.628 | 0.820 | 9.128 |
-| `basichttp` | 60 | 57,453 req/s | 0.693 | 2.195 | 2.458 | 3.885 | 1.044 | 22.843 |
-| `wshttp` | 60 | 49,199 req/s | 0.802 | 2.475 | 2.776 | 4.379 | 1.219 | 25.096 |
-| `nettcp` | 80 | 74,621 req/s | 0.828 | 2.049 | 2.279 | 3.048 | 1.072 | 67.385 |
-| `grpc` | 80 | 69,009 req/s | 0.940 | 2.198 | 2.714 | 3.588 | 1.159 | 17.431 |
-| `basichttp` | 80 | 55,093 req/s | 0.954 | 2.871 | 3.232 | 4.881 | 1.452 | 30.341 |
-| `wshttp` | 80 | 47,945 req/s | 1.115 | 3.118 | 3.597 | 5.224 | 1.668 | 33.714 |
-| `nettcp` | 100 | 72,007 req/s | 1.056 | 2.556 | 2.850 | 3.819 | 1.389 | 54.765 |
-| `grpc` | 100 | 68,067 req/s | 1.194 | 2.741 | 3.236 | 4.413 | 1.469 | 39.929 |
-| `basichttp` | 100 | 52,589 req/s | 1.241 | 3.568 | 4.028 | 5.886 | 1.901 | 36.866 |
-| `wshttp` | 100 | 45,100 req/s | 1.487 | 3.935 | 4.533 | 6.410 | 2.217 | 39.077 |
+| `nettcp` | 1 | 22,269 req/s | 0.040 | 0.061 | 0.073 | 0.115 | 0.045 | 16.809 |
+| `grpc` | 1 | 17,501 req/s | 0.053 | 0.078 | 0.090 | 0.121 | 0.057 | 9.159 |
+| `basichttp` | 1 | 19,775 req/s | 0.044 | 0.064 | 0.078 | 0.136 | 0.050 | 11.365 |
+| `wshttp` | 1 | 17,189 req/s | 0.051 | 0.071 | 0.087 | 0.154 | 0.058 | 9.971 |
+| `nettcp` | 10 | 84,837 req/s | 0.108 | 0.137 | 0.154 | 0.211 | 0.118 | 15.134 |
+| `grpc` | 10 | 79,872 req/s | 0.118 | 0.148 | 0.166 | 0.221 | 0.125 | 6.027 |
+| `basichttp` | 10 | 70,989 req/s | 0.125 | 0.164 | 0.189 | 0.268 | 0.141 | 13.222 |
+| `wshttp` | 10 | 63,376 req/s | 0.141 | 0.186 | 0.215 | 0.307 | 0.158 | 18.626 |
+| `nettcp` | 20 | 88,913 req/s | 0.209 | 0.263 | 0.289 | 0.386 | 0.225 | 19.759 |
+| `grpc` | 20 | 85,869 req/s | 0.224 | 0.278 | 0.300 | 0.370 | 0.233 | 23.133 |
+| `basichttp` | 20 | 74,575 req/s | 0.240 | 0.309 | 0.351 | 0.565 | 0.268 | 15.511 |
+| `wshttp` | 20 | 65,315 req/s | 0.275 | 0.353 | 0.403 | 0.645 | 0.306 | 17.063 |
+| `nettcp` | 40 | 91,338 req/s | 0.406 | 0.514 | 0.562 | 1.625 | 0.438 | 40.025 |
+| `grpc` | 40 | 88,643 req/s | 0.433 | 0.543 | 0.582 | 0.708 | 0.451 | 13.586 |
+| `basichttp` | 40 | 77,064 req/s | 0.468 | 0.600 | 0.674 | 2.538 | 0.519 | 17.276 |
+| `wshttp` | 40 | 68,520 req/s | 0.526 | 0.679 | 0.768 | 2.954 | 0.584 | 23.643 |
+| `nettcp` | 60 | 93,129 req/s | 0.597 | 0.767 | 0.851 | 2.846 | 0.644 | 20.731 |
+| `grpc` | 60 | 89,527 req/s | 0.642 | 0.816 | 0.877 | 1.222 | 0.670 | 23.829 |
+| `basichttp` | 60 | 79,398 req/s | 0.691 | 0.887 | 0.989 | 2.789 | 0.756 | 75.156 |
+| `wshttp` | 60 | 68,814 req/s | 0.786 | 1.021 | 1.168 | 4.312 | 0.872 | 18.166 |
+| `nettcp` | 80 | 92,360 req/s | 0.802 | 1.045 | 1.177 | 3.667 | 0.866 | 23.311 |
+| `grpc` | 80 | 89,344 req/s | 0.857 | 1.101 | 1.188 | 2.036 | 0.895 | 26.239 |
+| `basichttp` | 80 | 78,705 req/s | 0.929 | 1.207 | 1.362 | 3.686 | 1.016 | 162.055 |
+| `wshttp` | 80 | 68,149 req/s | 1.057 | 1.395 | 1.625 | 5.132 | 1.174 | 32.739 |
+| `nettcp` | 100 | 92,811 req/s | 1.001 | 1.313 | 1.500 | 4.132 | 1.077 | 18.380 |
+| `grpc` | 100 | 88,898 req/s | 1.079 | 1.388 | 1.499 | 3.297 | 1.125 | 23.223 |
+| `basichttp` | 100 | 78,944 req/s | 1.161 | 1.514 | 1.703 | 4.462 | 1.266 | 36.820 |
+| `wshttp` | 100 | 67,180 req/s | 1.344 | 1.785 | 2.154 | 5.795 | 1.488 | 22.903 |
 
 
 ### Findings (take this with huge grain of salt)
 
-1. **Perf ranking: `nettcp` > `grpc` > `basichttp` > `wshttp`** at every concurrency level **except
-   `-c 1`**, where `basichttp` (16,646) edges out `grpc` (15,950). The two are within 5% of each
-   other and sit at the same ~16k req/s, so the honest statement is that they are indistinguishable
-   at concurrency 1: with no queue to amortise against, the SOAP/XML tax hides behind per-call
-   overhead. `nettcp` wins over `basichttp` and `wshttp` as expected - binary over raw TCP beats
-   SOAP/XML over http. `nettcp` also wins over `grpc` but barely. Both use binary data (protobuf for
-   grpc). Could it be that HTTP2 added significant overhead compared to raw TCP? Not for
-   multi-megabyte payloads - see the [`GetOrders` results](#getorders-results), where the ranking
-   flips.
+1. **Perf ranking: `nettcp` > `grpc` > `basichttp` > `wshttp`** at every concurrency level. `nettcp`
+   wins over `basichttp` and `wshttp` as expected - binary over raw TCP beats SOAP/XML over http. It
+   also wins over `grpc`, but only by 3.0-4.4% from `-c 20` upwards. Both use binary data (protobuf for
+   grpc), so any HTTP/2 overhead over raw TCP is small and does not grow with payload size.
 
-2. **Throughput rises sharply up to a concurrency of 10, then plateaus and slowly decays.** The
-   peak is at `-c 10` (`nettcp` 82,253 req/s); by `-c 100` every transport has lost 10-15%. The
-   plateau spans `-c 10`-`20`, so the exact peak level is inside run-to-run noise.
+2. **At `-c 1` the two SOAP and binary HTTP paths are much closer than expected**, and `basichttp`
+   (19,775) beats `grpc` (17,501) by 13%. With a single worker there is no queue to amortise against, so
+   the SOAP/XML tax is hidden behind per-call overhead. `grpc` only pulls ahead from `-c 10` onwards.
+   This is the one place where the ordering differs from every other row.
 
-3. **Latency grows roughly linearly with concurrency while throughput flattens.** For `nettcp`, p50
-   goes 0.040 -> 0.103 -> 0.204 ms as concurrency goes 1 -> 10 -> 20: a near-exact 5x step in
-   latency for each 5x step in concurrency, which is the signature of a saturated server.
+3. **Throughput rises steeply to `-c 10` and then plateaus.** From `-c 20` to `-c 100` every transport
+   gains less than 6%: `nettcp` 88,913 -> 92,811 (+4.4%), `grpc` 85,869 -> 88,898 (+3.5%), `basichttp`
+   +5.9%, `wshttp` +2.9%. Past about 20 workers the server is saturated and extra concurrency buys
+   little; the SOAP transports even lose a little of their `-c 10` edge.
 
-4. **`wshttp` is consistently last** on both throughput and latency at every level from 10 upwards.
-   The SOAP 1.2 / WS-Addressing envelope plus TLS costs adds the most overhead.
+4. **Latency grows roughly linearly with concurrency while throughput flattens.** For `nettcp`, p50
+   goes 0.040 -> 0.108 -> 0.209 -> 1.001 ms as concurrency goes 1 -> 10 -> 20 -> 100: close to an
+   exact multiple, which is the signature of a saturated server. Throughput over the same range moves
+   22,269 -> 92,811, only 4.2x for 100x the concurrency.
 
-5. **`nettcp` has by far the worst tail latency.** Its `max` is 45-78 ms from `-c 20` upwards while
-   `grpc` stays under 18 ms across the entire sweep. Binary framing wins in the median and loses in
-   the extreme tail.
+5. **`wshttp` is consistently last** on both throughput and latency at every level. The SOAP 1.2 /
+   WS-Addressing envelope plus TLS adds the most overhead, and its p99 is the worst of the four at
+   every level from `-c 10` upwards.
+
+6. **`grpc` has the best tail latency once the server is loaded.** Its p99 is the lowest of the four
+   from `-c 20` up - 3.297 ms at `-c 100` against `nettcp`'s 4.132, `basichttp`'s 4.462 and `wshttp`'s
+   5.795 - and its `max` never exceeds 26.2 ms across the entire sweep, while `basichttp` reaches
+   162.1 ms. At `-c 1` and `-c 10` there is no queue yet and `nettcp` still has the lowest p99, but
+   once 20 workers are competing for the server, the one transport paying HTTP/2's framing cost is
+   the one that still delivers the most predictable latency.
 
 ### Concurrency (important)
 
@@ -176,132 +190,155 @@ Bench.Client -target wcf  -arg nettcp -op getorders -n 20000 -w 10 -d 60 -c 8
 
 Things worth knowing before you compare the numbers:
 
-- **The client allocates about 1.5 KB of managed heap per order.** At the default 10,000 orders
-  that is ~15 MB per call, per worker, on top of the server, so these runs are allocation-bound
-  long before they are transport-bound and their throughput is mostly a statement about the
-  deserializer rather than the wire. The client no longer reports allocation or GC counts - see
-  [Memory metrics](#memory-metrics) - so this has to be taken on trust.
 - **Latency includes full deserialization.** The harness times the whole call, which is the
   user-visible cost, but it is not a pure transport measurement.
-- **A 10,000 order response is 2.6 MB over protobuf and 11.6 MB over SOAP 1.1.** The gRPC
+- **A 10,000 order response is 2.52 MB over protobuf, 3.09 MB over `nettcp` and 11.03 MB over either
+  SOAP transport** - all four measured off the wire; see [Service methods](#service-methods). The gRPC
   channel's receive limit is raised to `int.MaxValue` so a count sweep does not fail on gRPC
   while succeeding on WCF; the default 4 MB would break at roughly 15,000 orders.
 - **The client asserts the response length.** It resolves the expected count with the same
   `OrderData.ResolveCount` the server uses, so a clamped or truncated response is counted as a
   failure instead of quietly producing a wrong throughput.
-- **Start lower than you would for `GetOrderById`.** The batch operation needs far more memory per
-  worker than the single-order one, and the advisory estimate the client prints above 1 GB is
-  optimistic by a wide margin - see [Memory metrics](#memory-metrics).
 - **The client sizes the thread pool from `-c` before starting the workers.** Each worker holds a
   pool thread across the synchronous part of its call, and the pool's hill-climbing injector only
   adds about one thread per 500 ms. Left at the default, `-c 100` on the batch operation produced a
   62-second p95 and a 60-second run that reported 84 seconds elapsed - the run was measuring the
   thread injector rather than the transport. `GetOrderById` is unaffected, since a 0.1 ms call never
   holds a thread long enough for the injector to matter.
-- **Restart the server between batch runs.** The WCF server reached 3.40 GB after ~75 minutes of
-  sustained benchmarking (GC heap growth and fragmentation, not the batch cache, which is only
-  ~150 MB). A bloated server changes what the client is competing with, and because gRPC is swept
-  first at each concurrency level it inherited the worst of it.
 
  
 ## `GetOrders` results
 
-1,000 orders per call, `-w 10 -d 60`, same sweep as above. **Zero failed calls across the 23 runs
-that fit in memory** (776,670 successful calls). `n/a` marks the five `grpc` cells that exhaust
-this machine - see finding 3 below.
+1,000 orders per call, `-w 10 -d 60`, same sweep as above. **Zero failed calls across all 28 runs**
+(3,210,299 successful calls).
 
 | Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
 |---|---|---|---|---|
-| 1 | 468 | **907** | 243 | 203 |
-| 10 | 1,287 | **1,294** | 821 | 715 |
-| 20 | **764** | n/a | 612 | 564 |
-| 40 | **548** | n/a | 441 | 417 |
-| 60 | **505** | n/a | 408 | 383 |
-| 80 | **464** | n/a | 384 | 368 |
-| 100 | **442** | n/a | 365 | 330 |
+| 1 | 445 | **919** | 233 | 213 |
+| 10 | 1,800 | **4,914** | 1,009 | 818 |
+| 20 | 1,925 | **5,180** | 1,054 | 839 |
+| 40 | 1,969 | **4,971** | 1,059 | 854 |
+| 60 | 1,982 | **4,763** | 1,043 | 852 |
+| 80 | 1,947 | **4,597** | 1,047 | 850 |
+| 100 | 1,957 | **4,324** | 1,067 | 854 |
 
-Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for orders/s. The client
-reports latency and throughput only - see [Memory metrics](#memory-metrics) for why.
+Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for orders/s.
 
 ### Raw data
 
 | Transport | Conc. | Throughput | p50 | p90 | p95 | p99 | mean | max |
 |---|---|---|---|---|---|---|---|---|
-| `nettcp` | 1 | 468 req/s | 1.998 | 2.701 | 2.740 | 2.936 | 2.137 | 4.050 |
-| `grpc` | 1 | 907 req/s | 0.996 | 1.391 | 1.947 | 2.043 | 1.102 | 18.894 |
-| `basichttp` | 1 | 243 req/s | 3.997 | 4.553 | 4.668 | 4.981 | 4.110 | 30.199 |
-| `wshttp` | 1 | 203 req/s | 4.660 | 6.919 | 7.116 | 7.688 | 4.931 | 21.459 |
-| `nettcp` | 10 | 1,287 req/s | 7.237 | 11.778 | 12.912 | 16.500 | 7.769 | 41.303 |
-| `grpc` | 10 | 1,294 req/s | 6.864 | 14.122 | 16.627 | 21.787 | 7.725 | 35.210 |
-| `basichttp` | 10 | 821 req/s | 11.680 | 17.799 | 19.332 | 22.885 | 12.186 | 34.553 |
-| `wshttp` | 10 | 715 req/s | 13.486 | 20.076 | 21.809 | 26.194 | 13.977 | 41.623 |
-| `nettcp` | 20 | 764 req/s | 22.512 | 44.976 | 55.177 | 74.139 | 26.177 | 134.827 |
-| `grpc` | 20 | **not measurable** |  |  |  |  |  |  |
-| `basichttp` | 20 | 612 req/s | 29.409 | 54.029 | 65.088 | 83.093 | 32.681 | 142.247 |
-| `wshttp` | 20 | 564 req/s | 32.764 | 56.253 | 65.584 | 81.304 | 35.440 | 123.405 |
-| `nettcp` | 40 | 548 req/s | 61.491 | 139.312 | 169.611 | 229.104 | 72.959 | 353.332 |
-| `grpc` | 40 | **not measurable** |  |  |  |  |  |  |
-| `basichttp` | 40 | 441 req/s | 79.193 | 164.476 | 193.955 | 252.551 | 90.610 | 424.616 |
-| `wshttp` | 40 | 417 req/s | 84.287 | 169.796 | 199.447 | 256.952 | 95.750 | 411.279 |
-| `nettcp` | 60 | 505 req/s | 98.649 | 238.889 | 286.350 | 375.793 | 118.764 | 858.652 |
-| `grpc` | 60 | **not measurable** |  |  |  |  |  |  |
-| `basichttp` | 60 | 408 req/s | 129.353 | 274.292 | 316.910 | 403.411 | 147.000 | 646.182 |
-| `wshttp` | 60 | 383 req/s | 138.326 | 288.253 | 339.537 | 433.581 | 156.541 | 835.753 |
-| `nettcp` | 80 | 464 req/s | 141.973 | 355.656 | 424.242 | 545.885 | 172.472 | 923.853 |
-| `grpc` | 80 | **not measurable** |  |  |  |  |  |  |
-| `basichttp` | 80 | 384 req/s | 183.925 | 402.884 | 467.299 | 600.399 | 208.051 | 999.284 |
-| `wshttp` | 80 | 368 req/s | 194.376 | 406.046 | 469.866 | 590.918 | 217.232 | 933.886 |
-| `nettcp` | 100 | 442 req/s | 183.169 | 479.509 | 578.293 | 776.474 | 226.297 | 1352.488 |
-| `grpc` | 100 | **not measurable** |  |  |  |  |  |  |
-| `basichttp` | 100 | 365 req/s | 239.772 | 540.405 | 625.598 | 803.603 | 273.827 | 1315.095 |
-| `wshttp` | 100 | 330 req/s | 270.641 | 568.275 | 659.834 | 830.096 | 302.762 | 1578.572 |
+| `nettcp` | 1 | 445 req/s | 2.136 | 2.288 | 2.458 | 4.534 | 2.248 | 18.559 |
+| `grpc` | 1 | 919 req/s | 1.048 | 1.154 | 1.239 | 1.956 | 1.088 | 15.389 |
+| `basichttp` | 1 | 233 req/s | 4.092 | 5.101 | 5.496 | 6.779 | 4.301 | 17.965 |
+| `wshttp` | 1 | 213 req/s | 4.438 | 5.670 | 6.074 | 7.322 | 4.691 | 28.357 |
+| `nettcp` | 10 | 1,800 req/s | 4.740 | 8.870 | 10.630 | 15.090 | 5.554 | 64.339 |
+| `grpc` | 10 | 4,914 req/s | 1.869 | 2.508 | 3.017 | 5.766 | 2.035 | 104.749 |
+| `basichttp` | 10 | 1,009 req/s | 9.085 | 14.452 | 16.395 | 21.009 | 9.904 | 71.320 |
+| `wshttp` | 10 | 818 req/s | 11.425 | 17.362 | 19.682 | 26.314 | 12.222 | 68.931 |
+| `nettcp` | 20 | 1,925 req/s | 9.114 | 16.826 | 20.495 | 30.875 | 10.391 | 119.081 |
+| `grpc` | 20 | 5,180 req/s | 3.556 | 5.273 | 6.119 | 9.474 | 3.861 | 32.353 |
+| `basichttp` | 20 | 1,054 req/s | 16.909 | 30.229 | 36.342 | 53.768 | 18.970 | 132.278 |
+| `wshttp` | 20 | 839 req/s | 21.583 | 36.698 | 43.263 | 60.925 | 23.838 | 170.396 |
+| `nettcp` | 40 | 1,969 req/s | 18.277 | 32.234 | 39.443 | 60.253 | 20.318 | 170.086 |
+| `grpc` | 40 | 4,971 req/s | 7.026 | 12.255 | 14.110 | 23.252 | 8.047 | 45.110 |
+| `basichttp` | 40 | 1,059 req/s | 33.386 | 61.327 | 76.077 | 113.012 | 37.743 | 299.726 |
+| `wshttp` | 40 | 854 req/s | 43.822 | 69.546 | 81.292 | 112.891 | 46.814 | 234.820 |
+| `nettcp` | 60 | 1,982 req/s | 27.262 | 47.736 | 57.219 | 87.522 | 30.268 | 252.046 |
+| `grpc` | 60 | 4,763 req/s | 10.720 | 19.683 | 23.770 | 36.944 | 12.597 | 60.956 |
+| `basichttp` | 60 | 1,043 req/s | 51.465 | 91.972 | 111.965 | 164.545 | 57.522 | 359.591 |
+| `wshttp` | 60 | 852 req/s | 67.102 | 102.088 | 117.530 | 157.513 | 70.359 | 328.733 |
+| `nettcp` | 80 | 1,947 req/s | 37.330 | 64.529 | 77.773 | 114.437 | 41.061 | 256.861 |
+| `grpc` | 80 | 4,597 req/s | 14.791 | 27.309 | 34.450 | 48.456 | 17.400 | 77.749 |
+| `basichttp` | 80 | 1,047 req/s | 71.844 | 112.958 | 131.631 | 182.330 | 76.337 | 386.171 |
+| `wshttp` | 80 | 850 req/s | 89.498 | 135.957 | 156.049 | 204.722 | 94.046 | 408.195 |
+| `nettcp` | 100 | 1,957 req/s | 46.552 | 79.266 | 94.551 | 135.603 | 51.078 | 330.016 |
+| `grpc` | 100 | 4,324 req/s | 19.889 | 36.300 | 43.910 | 60.011 | 23.114 | 106.532 |
+| `basichttp` | 100 | 1,067 req/s | 88.216 | 139.165 | 160.951 | 213.699 | 93.692 | 413.856 |
+| `wshttp` | 100 | 854 req/s | 113.656 | 164.910 | 185.014 | 236.020 | 117.055 | 416.081 |
 
 ### Batch findings
 
-1. **`grpc` is the fastest transport on the batch operation where it can be measured** - 907 req/s
-   against `nettcp`'s 468 at `-c 1` (1.9x), and a dead heat at `-c 10` (1,294 vs 1,287). This is the
-   opposite of the single-order result, where `nettcp` leads everywhere. Neither ranking generalises
-   to the other operation.
+1. **`grpc` wins this operation at every concurrency level.** 919 req/s against `nettcp`'s 445 at
+   `-c 1` (2.1x), 5,180 against 1,925 at the `-c 20` peak (2.7x), and 4,324 against 1,957 at `-c 100`
+   (2.2x). Against the SOAP transports the margin is much wider: at `-c 100`, `basichttp` manages
+   1,067 and `wshttp` 854, so gRPC is 4.1x and 5.1x.
 
-2. **Throughput peaks at `-c 10` and then decays monotonically.** `nettcp` goes 468 -> 1,287 -> 764
-   -> 442 as concurrency goes 1 -> 10 -> 20 -> 100, while p50 latency climbs 2.0 ms -> 7.2 ms ->
-   183 ms. There is no plateau on this operation: more workers simply make every worker slower.
+2. **The ranking flips between the two operations, and payload size is why.** On `GetOrderById`,
+   `nettcp` leads gRPC at every level - by 27% at `-c 1`, 6.2% at `-c 10`, and a steady 3.0-4.4% from
+   `-c 20` upwards. Here gRPC leads `nettcp` by 2.2-2.7x. A single-order response is small enough that
+   per-call overhead is the entire cost, and raw TCP's lower fixed cost wins. At 1,000 orders the
+   response dominates and per-call overhead stops mattering; what is left is serialization, framing and
+   buffering throughput, and there protobuf over HTTP/2 pulls away. Neither transport is "faster" in
+   the abstract - the winner is a function of response size.
 
-3. **`grpc` has a memory cliff between `-c 10` and `-c 20`, and batch size barely moves it.** At
-   `-c 10` gRPC peaks at **0.30 GB**; at `-c 20` it needs **19.6 GB**, and 19-23 GB from `-c 40`
-   upwards. Dropping the batch from 10,000 orders to 1,000 only took the ceiling from 24.6 GB to
-   about 20 GB, so the driver is concurrency - 110 pool threads at `-c 100`, each with a live
-   response - not the payload. Two retries at raised limits (26 then 29 GB of RSS, 2 then 5 GB of
-   swap growth) both ended in the machine swapping and being killed. This is recorded as **not
-   measurable**, not as "slow": the two cells that did complete under a raised limit reported p99
-   latencies of 35.6 s and 37.7 s and overshot a 60-second run to 73 seconds, which measures the
-   swap rather than the transport. More RAM, or Server GC, would very likely fill these cells in.
+3. **Payload size accounts for most of the gap, and `nettcp`'s 2nd place is partly borrowed.**
+   Measured response bytes are in [Service methods](#service-methods): at 1,000 orders protobuf
+   carries 264 KB, net.tcp binary XML 324 KB, and either SOAP transport 1.15 MB. Multiplying payload
+   by measured throughput at the `-c 20` peak gives the rate at which each transport actually moves
+   data:
 
-4. **For the three WCF transports, throughput per byte of memory is the story.** At `-c 100`,
-   `nettcp` delivers 442 req/s on 5.02 GB while `basichttp` manages 365 req/s on 1.75 GB and
-   `wshttp` 330 req/s on 2.14 GB. The SOAP transports allocate ~2.5x per order what the binary ones
-   do, because they materialise ~11 MB of XML before a single `Order` object exists.
+   | Transport | req/s @ c=20 | Payload | Payload moved |
+   |---|---|---|---|
+   | `grpc` | 5,180 | 263,626 B | **1.37 GB/s** |
+   | `nettcp` | 1,925 | 323,785 B | 0.62 GB/s |
+   | `basichttp` | 1,054 | 1,154,714 B | **1.22 GB/s** |
+   | `wshttp` | 839 | 1,154,948 B | 0.97 GB/s |
+
+   Two things fall out. gRPC wins on *both* axes, which the req/s table alone does not show. And
+   `basichttp` moves **twice as many bytes per second as `nettcp`** despite being a little over half
+   its throughput - its 4.4x larger payload is very nearly cancelled by a much faster serializer,
+   while net.tcp's compact binary XML does not buy it a faster encoder. `nettcp`'s 2nd place is
+   therefore partly a smaller payload rather than purely a faster stack.
+
+4. **gRPC is the only transport that loses throughput as concurrency rises.** It peaks at `-c 20`
+   with 5,180 req/s and decays 17% to 4,324 by `-c 100`, while the three WCF transports hold a flat
+   plateau over the same range, all ending slightly *above* their own c=20 value: `nettcp` 1,925 ->
+   1,957, `basichttp` 1,054 -> 1,067, `wshttp` 839 -> 854. Past about 20 workers every response is
+   large enough that the server's serializer, not the queue, is the ceiling - extra concurrency only
+   deepens the backlog.
+
+5. **gRPC has the best tail latency at every level.** At `-c 100` its p99 is 60.0 ms against
+   `nettcp`'s 135.6, `basichttp`'s 213.7 and `wshttp`'s 236.0. Its `max` never exceeds 106.5 ms
+   anywhere in the sweep, while `basichttp` reaches 413.9 ms and `wshttp` 416.1 ms.
+
 
 ### Larger batch: 10,000 orders per call
 
-The same sweep at the default 10,000 orders is where the memory ceiling in finding 3 becomes
-unavoidable. Zero failed calls across the 22 runs that fit (62,842 successful calls):
+This sweep is **not published any more**. It was measured on a workstation-GC client, and the
+configuration it was measured under is no longer the configuration in this repository - both projects
+now set `<ServerGarbageCollection>true</ServerGarbageCollection>`. Under Server GC every transport
+completes the full sweep, so the `n/a` cells that made that table interesting no longer describe
+anything real. Re-run it to regenerate:
 
-| Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
-|---|---|---|---|---|
-| 1 | 41 | **61** | 23 | 21 |
-| 10 | **79** | n/a | 59 | 55 |
-| 20 | **69** | n/a | 51 | 48 |
-| 40 | **55** | n/a | 46 | 44 |
-| 60 | **55** | n/a | 42 | 40 |
-| 80 | **50** | n/a | 40 | 38 |
-| 100 | **45** | n/a | 39 | 38 |
+```bash
+./Bench.Client/bin/Release/net10.0/Bench.Client -target grpc -op getorders -w 10 -d 60 -c 20
+```
 
-The shape is the same - `nettcp` leads from `-c 10` up, throughput decays with concurrency - but the
-gap widens and gRPC's ceiling moves down to `-c 1` instead of `-c 10`. `nettcp`'s working set at
-`-c 100` doubles from 5.02 GB to 12.14 GB, and `basichttp`'s grows from 1.75 GB to 17.91 GB. Only the
-throughput summary is reproduced here; the per-run latency and memory figures for this sweep were
-measured under the same conditions but are not tabulated.
+The 10,000-order response is 2.52 MB over protobuf, 3.09 MB over `nettcp` and 11.03 MB over either
+SOAP transport, so `MaxBufferSize` has to stay well clear of the 64 KB default - see
+[Notes on the harness](#notes-on-the-harness).
+
+## Notes on the harness
+
+Three changes were made while benchmarking. Each one invalidates results measured before it, which is
+why the numbers here are not comparable with any earlier version of this table.
+
+1. **Server GC on both processes.** `Bench.Server` and `Bench.Client` both set
+   `<ServerGarbageCollection>true</ServerGarbageCollection>` explicitly. Neither uses
+   `Microsoft.NET.Sdk.Web`, which is what normally turns Server GC on, so it has to be requested.
+   Results measured before this change are not comparable with the ones published here.
+2. **The client sizes the thread pool from `-c` before starting the workers**
+   (`Harness.EnsureThreadPoolCapacity`, floor of `concurrency + ProcessorCount`). Each worker holds a
+   pool thread across the synchronous part of its call and the pool's hill-climbing injector adds only
+   about one thread per 500 ms, so at `-c 100` the harness was measuring the injector: a 62-second p95
+   and a 60-second run reporting 84 seconds elapsed. `GetOrderById` is unaffected, since a 0.1 ms call
+   never holds a thread long enough to matter.
+3. **The net.tcp binding raises `MaxBufferSize` to 16 MB.** The 64 KB default caps the session's
+   *send* path as well as its receive path, so a 1,000-order response (324 KB) fails deterministically
+   with `CommunicationException: The server did not provide a meaningful reply`. 64 KB is enough for
+   `GetOrderById`, which is why this only ever showed up on the batch operation. The 16 MB bound is
+   chosen to clear the 3.09 MB `nettcp` response at 10,000 orders with headroom, while staying bounded.
 
 ## Running
 
@@ -344,7 +381,20 @@ Bench.Client -target wcf -arg nettcp -address "net.tcp://localhost:5002/Northwin
 `-op` selects the operation and defaults to `getorderbyid`, so every command in the results
 table above still behaves exactly as it did. `-n` sets the batch size and is only accepted
 alongside `-op getorders`.
- 
+
+## Regenerating the chart
+
+The chart in [Results](#results) is generated from the same TSV the tables are built from, so
+the image cannot drift from the measured data:
+
+```bash
+python3 tools/gen-chart.py <results.tsv> --html /tmp/chart.html --png docs/getorderbyid.png
+```
+
+The TSV is tab separated, one row per run, with the columns
+`op transport conc success failed elapsed_s throughput min_ms mean_ms p50_ms p90_ms p95_ms p99_ms max_ms`.
+The script reads every number it plots out of that file, so nothing in the chart is typed by hand.
+
 
 ## Regenerating the WCF client
 

@@ -76,12 +76,11 @@ try {
     Console.WriteLine($"{cli.Describe()}  (warmup {benchArgs.Warmup.TotalSeconds:0.###}s, duration {benchArgs.Duration.TotalSeconds:0.###}s, concurrency {benchArgs.Concurrency})");
     Console.WriteLine(Harness.CreateReport(result));
     return result.Errors == 0 ? 0 : 1;
-} catch (CommunicationException ex) {
-    Console.Error.WriteLine($"FAILED: {ex.GetType().Name}: {ex.Message}");
-    Console.Error.WriteLine("Hint: is the server running? Start it with `Bench.Server -target wcf` or `Bench.Server -target grpc`.");
-    return 1;
 } catch (Exception ex) {
-    Console.Error.WriteLine($"FAILED: {ex.GetType().Name}: {ex.Message}");
+   for (Exception? e = ex; e is not null; e = e.InnerException) {
+        Console.Error.WriteLine($"FAILED: {e.GetType().FullName}: {e.Message}");
+    }
+    Console.Error.WriteLine(ex.StackTrace);
     return 1;
 }
 

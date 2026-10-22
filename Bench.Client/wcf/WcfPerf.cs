@@ -48,8 +48,13 @@ public class WcfPerf(WcfTransport transport, Args args) : IDisposable {
     }
  
     static NetTcpBinding CreateNetTcpBinding() {
+        // MaxBufferSize caps the per-session buffer used on BOTH the send and the receive path, so it
+        // has to fit the largest response or GetOrders fails with "the server did not provide a
+        // meaningful reply". The default 65,536 is fine for GetOrderById and too small for the batch
+        // operation. 16 MB covers a 10,000 order net.tcp response (~5.9 MB) with headroom, while
+        // staying bounded - int.MaxValue asks for a 2 GB per-session buffer and is never needed.
         return new NetTcpBinding(SecurityMode.None) {
-            MaxBufferSize         = int.MaxValue,
+            MaxBufferSize         = 16 * 1024 * 1024,
             MaxReceivedMessageSize = int.MaxValue,
             ReaderQuotas          = XmlDictionaryReaderQuotas.Max,
             OpenTimeout           = TimeSpan.FromSeconds(10),
@@ -60,6 +65,15 @@ public class WcfPerf(WcfTransport transport, Args args) : IDisposable {
     }
 
     public void Dispose() {
-        _client.Close();
+        // Closing a faulted channel throws CommunicationObjectFaultedException. That is a normal
+        // outcome for a benchmark run - the harness counts the failed calls - so letting it escape
+        // Dispose() tears the exception out through RunWcf's finally block and destroys a result set
+        // that was otherwise complete. Abort a faulted channel and never throw from cleanup.
+        try {
+            if (_client.State == CommunicationState.Faulted) _client.Abort();
+            else _client.Close();
+        } catch (Exception) {
+            _client.Abort();
+        }
     }
 }

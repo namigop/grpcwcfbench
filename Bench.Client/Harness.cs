@@ -46,6 +46,14 @@ public static class Harness {
             ThreadPool.SetMinThreads(wanted, minCompletionThreads);
     }
 
+    /// <summary>Flattens an exception chain; the interesting cause is almost never the outermost one.</summary>
+    static string Describe(Exception ex) {
+        var sb = new System.Text.StringBuilder();
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            sb.Append(e.GetType().Name).Append(": ").Append(e.Message).Append(" | ");
+        return sb.ToString();
+    }
+
     public static async Task<BenchResult> Run(Args args, Func<int, CancellationToken, Task> call, bool record) {
         EnsureThreadPoolCapacity(args.Concurrency);
 
@@ -84,7 +92,8 @@ public static class Harness {
                             list.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
                     }
                     catch (Exception exc) {
-                        errors[id]++;
+                        if (errors[id]++ == 0)
+                            Console.Error.WriteLine($"[worker {id}] first failure: {Describe(exc)}");
                     }
                 }
             }

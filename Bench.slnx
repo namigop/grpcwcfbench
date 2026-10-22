@@ -2,6 +2,9 @@
   <Folder Name="/doc/">
     <File Path="README.md" />
   </Folder>
+  <Folder Name="/tools/">
+    <File Path="tools/gen-chart.py" />
+  </Folder>
   <Project Path="Bench.Client/Bench.Client.csproj" />
   <Project Path="Bench.Server\Bench.Server.csproj" />
 </Solution>
