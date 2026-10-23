@@ -1,22 +1,20 @@
 # WCF vs gRPC Benchmark
 
 Micro-benchmark comparing **WCF (CoreWCF) over three transports** against **gRPC** for two
-unary methods, on .NET 10 / C#: a single-order `GetOrderById` and a batch `GetOrders`
-(10,000 orders by default). Both operations are swept across the full concurrency range and both
-result sets are published below.
+unary methods, on .NET 10 / C#: a single-order `GetOrderById` and a batch `GetOrders`. Both
+operations are run across the full concurrency range
 
-This benchmark was done as a fun excercise. Be aware of the following caveats
+This benchmark was done as a fun exercise. Please be aware of the following caveats
 - Both client and server were ran on the same machine.
 - The response of the `GetOrderById` method is hardcoded.  There is no additional logic apart from just returning an `Order` instance
-- No finetuning was done on the gRPC or WCF servers
-- The duration of the benchmark is just 60 sec (with a 10 sec warmup time)
-- For `GetOrders` the harness measures the whole call including deserialization, so the batch numbers
-  are a statement about the deserializer as much as about the wire.
-- **Both processes run Server GC**, set explicitly in each csproj. Neither project uses
-  `Microsoft.NET.Sdk.Web`, which is what would normally turn Server GC on, so it has to be requested.
-  Every number published here was measured with that configuration.
+- No fine tuning was done on the gRPC or WCF servers
+- The duration of the benchmark is just 60 sec `-d 60` (with a 10 sec warmup time `-w 10`)
+- **Both processes run Server GC**, set explicitly in each csproj.
 - The WCF net.tcp endpoint needs `MaxBufferSize` raised well above the 64 KB default or the batch
   operation fails outright. See [Notes on the harness](#notes-on-the-harness).
+
+> Since this test was done on a single machine, and since WCF and gRPC are both built on top ASP.NET Core,
+> the performance differences below are likely due protobuf (grpc), binary xml (nettcp), and SOAP xml serialization.
 
 ## Transports compared
 
@@ -29,7 +27,7 @@ This benchmark was done as a fun excercise. Be aware of the following caveats
 
 ## Service methods
 
-Both services expose the same two operations, so the transports can be compared on a single-order
+Both grpc and WCF services expose the same two operations, so the transports can be compared on a single-order
 and a batch response.
 
 | Method | gRPC | WCF | Returns |
@@ -37,19 +35,16 @@ and a batch response.
 | `GetOrderById` | `rpc GetOrderById(OrderRequest) returns (Order)` | `Order GetOrderById(OrderRequest)` | one hardcoded order |
 | `GetOrders` | `rpc GetOrders(OrdersRequest) returns (OrdersResponse)` | `OrdersResponse GetOrders(OrdersRequest)` | **10,000** orders |
 
-Both `GetOrders` operations return a response wrapper holding the batch, which mirrors the
-`OrdersResponse` message on both sides and leaves room for paging metadata later:
 
 ```
 WCF     OrdersResponse { Order[] Orders }
 gRPC    OrdersResponse { repeated Order orders }
 ```
 
-`GetOrders` takes an optional `Count` (gRPC) / `Count` (WCF `OrdersRequest`). A value of 0 or less
-means "use the server default" of 10,000. Max count is clamped to 1,000,000. The batch is materialised once and cached per process, because
-rebuilding 10,000 orders on every call would measure the allocator rather than the transport.
+`GetOrders` takes an optional `Count` (gRPC) / `Count` (WCF `OrdersRequest`) which determines the number of orders returned.
+The batch is materialized once and cached per process in order to avoid measuring the object allocation/de-allocation
  
-Measured response payload on .NET 10, straight off the wire:
+Measured wire response payload on .NET 10
 
 | Transport | Encoding | **n = 1,000** | n = 10,000 | bytes/order | vs gRPC |
 |---|---|---|---|---|---|
@@ -61,16 +56,7 @@ Measured response payload on .NET 10, straight off the wire:
 SOAP is **4.4x more verbose than protobuf** and 3.6x more verbose than net.tcp's binary XML. Measured
 four different ways: `curl` reports the exact HTTP body length for the two SOAP transports,
 `CalculateSize()` gives the exact protobuf encoding for gRPC, and a byte-counting TCP proxy measures
-the real net.tcp framing. All four are deterministic - repeated net.tcp runs are byte-identical.
-
-> An earlier version of this table gave `nettcp` as ~5.9 MB. That was an estimate ("about half of
-> SOAP"), never measured, and it was wrong by 1.9x. The 3.09 MB above is measured.
-
-Two things are worth noticing. The two SOAP transports have an **identical** marginal cost -
-1156.71 bytes per order either way, difference 0.0000 - because they share the same
-`DataContract` XML and differ only in a 234-byte WS-Addressing/SOAP 1.2 envelope. And protobuf
-carries essentially no per-message envelope at all, so its size is pure payload.
- 
+the real net.tcp framing
 
 ## Environment
 
@@ -79,11 +65,11 @@ carries essentially no per-message envelope at all, so its size is pure payload.
 - CoreWCF 1.9.1, gRPC 2.84.0, `System.ServiceModel.Http` 10.0.652802
 
 ## Test Setup
-- server warmup time `10 sec` (done to exlude connection setup and JIT time)
+- server warmup time `10 sec` (done to exclude connection setup and JIT time)
 - test duration `60 sec` 
 - concurrency levels `1/10/20/40/60/80/100` (simulates the number of concurrent clients. Each client has its own channel)
 
-## Results
+# Single Order Response Payload Benchmark
 
 All results in this section are `GetOrderById`. The batch results are in
 [their own section](#getorders-results).
@@ -144,89 +130,41 @@ Throughput and p99 tail latency at each concurrency level
 
 1. **Perf ranking: `nettcp` > `grpc` > `basichttp` > `wshttp`** at every concurrency level. `nettcp`
    wins over `basichttp` and `wshttp` as expected - binary over raw TCP beats SOAP/XML over http. It
-   also wins over `grpc`, but only by 3.0-4.4% from `-c 20` upwards. Both use binary data (protobuf for
-   grpc), so any HTTP/2 overhead over raw TCP is small and does not grow with payload size.
-
-2. **At `-c 1` the two SOAP and binary HTTP paths are much closer than expected**, and `basichttp`
-   (19,775) beats `grpc` (17,501) by 13%. With a single worker there is no queue to amortise against, so
-   the SOAP/XML tax is hidden behind per-call overhead. `grpc` only pulls ahead from `-c 10` onwards.
-   This is the one place where the ordering differs from every other row.
-
-3. **Throughput rises steeply to `-c 10` and then plateaus.** From `-c 20` to `-c 100` every transport
-   gains less than 6%: `nettcp` 88,913 -> 92,811 (+4.4%), `grpc` 85,869 -> 88,898 (+3.5%), `basichttp`
-   +5.9%, `wshttp` +2.9%. Past about 20 workers the server is saturated and extra concurrency buys
-   little; the SOAP transports even lose a little of their `-c 10` edge.
-
-4. **Latency grows roughly linearly with concurrency while throughput flattens.** For `nettcp`, p50
-   goes 0.040 -> 0.108 -> 0.209 -> 1.001 ms as concurrency goes 1 -> 10 -> 20 -> 100: close to an
-   exact multiple, which is the signature of a saturated server. Throughput over the same range moves
-   22,269 -> 92,811, only 4.2x for 100x the concurrency.
-
-5. **`wshttp` is consistently last** on both throughput and latency at every level. The SOAP 1.2 /
-   WS-Addressing envelope plus TLS adds the most overhead, and its p99 is the worst of the four at
-   every level from `-c 10` upwards.
-
-6. **`grpc` has the best tail latency once the server is loaded.** Its p99 is the lowest of the four
-   from `-c 20` up - 3.297 ms at `-c 100` against `nettcp`'s 4.132, `basichttp`'s 4.462 and `wshttp`'s
-   5.795 - and its `max` never exceeds 26.2 ms across the entire sweep, while `basichttp` reaches
-   162.1 ms. At `-c 1` and `-c 10` there is no queue yet and `nettcp` still has the lowest p99, but
-   once 20 workers are competing for the server, the one transport paying HTTP/2's framing cost is
-   the one that still delivers the most predictable latency.
+   also wins over `grpc` but not by much.
+2. **Throughput rises steeply to `-c 10` and then plateaus.** 
+3. **Latency grows roughly linearly with concurrency while throughput flattens.**
+4. **`wshttp` is consistently last** on both throughput and latency at every level**
 
 ### Concurrency (important)
 
 `-c N` creates **N independent clients, for gRPC as well as WCF**. Each `GrpcPerf` owns its own
 `GrpcChannel`, so N workers means N HTTP/2 connections.
 
-## Benchmarking `GetOrders`
+# Batch Order Response Payload Benchmark
 
 `-op getorders` switches the harness to the batch operation. The same `-w`, `-d` and `-c` knobs
-apply. The report format is identical to `GetOrderById` - throughput and latency only.
+apply
 
 ```bash
-Bench.Client -target grpc -op getorders -w 10 -d 60 -c 4
-Bench.Client -target wcf  -arg nettcp -op getorders -n 20000 -w 10 -d 60 -c 8
+Bench.Client -target grpc -op getorders -n 1000 -w 10 -d 60 -c 8
+Bench.Client -target wcf  -arg nettcp -op getorders -n 1000 -w 10 -d 60 -c 8
 ```
-
-Things worth knowing before you compare the numbers:
-
-- **Latency includes full deserialization.** The harness times the whole call, which is the
-  user-visible cost, but it is not a pure transport measurement.
-- **A 10,000 order response is 2.52 MB over protobuf, 3.09 MB over `nettcp` and 11.03 MB over either
-  SOAP transport** - all four measured off the wire; see [Service methods](#service-methods). The gRPC
-  channel's receive limit is raised to `int.MaxValue` so a count sweep does not fail on gRPC
-  while succeeding on WCF; the default 4 MB would break at roughly 15,000 orders.
-- **The client asserts the response length.** It resolves the expected count with the same
-  `OrderData.ResolveCount` the server uses, so a clamped or truncated response is counted as a
-  failure instead of quietly producing a wrong throughput.
-- **The client sizes the thread pool from `-c` before starting the workers.** Each worker holds a
-  pool thread across the synchronous part of its call, and the pool's hill-climbing injector only
-  adds about one thread per 500 ms. Left at the default, `-c 100` on the batch operation produced a
-  62-second p95 and a 60-second run that reported 84 seconds elapsed - the run was measuring the
-  thread injector rather than the transport. `GetOrderById` is unaffected, since a 0.1 ms call never
-  holds a thread long enough for the injector to matter.
-
  
 ## `GetOrders` results
 
-1,000 orders per call, `-w 10 -d 60`, same sweep as above. **Zero failed calls across all 28 runs**
-(3,058,967 successful calls).
-
-Throughput and p99 tail latency at each concurrency level
+1,000 orders per request, with 10 sec warmup and duration of 60 sec, `-w 10 -d 60`. Chart below shows throughput (req/sec) and p99 tail latency at each concurrency level
 
 ![GetOrders throughput and p99 latency across 7 concurrency levels](./docs/getorders.png)
 
 | Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
 |---|---|---|---|---|
-| 1 | 444 | **934** | 228 | 204 |
-| 10 | 1,736 | **4,694** | 922 | 746 |
-| 20 | 1,817 | **4,682** | 994 | 770 |
-| 40 | 1,880 | **4,689** | 1,002 | 803 |
-| 60 | 1,878 | **4,473** | 1,005 | 802 |
-| 80 | 1,917 | **4,388** | 1,025 | 814 |
-| 100 | 1,934 | **4,350** | 1,020 | 816 |
-
-Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for orders/s.
+| 1 | 444 req/s | **934 req/s** | 228 req/s  | 204 req/s  |
+| 10 | 1,736 req/s | **4,694 req/s** | 922 req/s  | 746 req/s  |
+| 20 | 1,817 req/s | **4,682 req/s** | 994 req/s  | 770 req/s  |
+| 40 | 1,880 req/s | **4,689 req/s** | 1,002 req/s  | 803 req/s  |
+| 60 | 1,878 req/s  | **4,473 req/s** | 1,005 req/s  | 802 req/s  |
+| 80 | 1,917 req/s  | **4,388 req/s** | 1,025 req/s  | 814 req/s  |
+| 100 | 1,934 req/s  | **4,350 req/s** | 1,020 req/s  | 816 req/s  |
 
 ### Raw data
 
@@ -263,48 +201,16 @@ Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for 
 
 ### Batch findings
 
-1. **`grpc` wins this operation at every concurrency level.** 934 req/s against `nettcp`'s 444 at
-   `-c 1` (2.1x), 4,682 against 1,817 at `-c 20` (2.6x), and 4,350 against 1,934 at `-c 100`
-   (2.2x). Against the SOAP transports the margin is much wider: at `-c 100`, `basichttp` manages
-   1,020 and `wshttp` 816, so gRPC is 4.3x and 5.3x.
-
-2. **The ranking flips between the two operations, and payload size is why.** On `GetOrderById`,
-   `nettcp` leads gRPC at every level - by 27% at `-c 1`, 6.2% at `-c 10`, and a steady 3.0-4.4% from
-   `-c 20` upwards. Here gRPC leads `nettcp` by 2.2-2.7x. A single-order response is small enough that
-   per-call overhead is the entire cost, and raw TCP's lower fixed cost wins. At 1,000 orders the
-   response dominates and per-call overhead stops mattering; what is left is serialization, framing and
-   buffering throughput, and there protobuf over HTTP/2 pulls away. Neither transport is "faster" in
-   the abstract - the winner is a function of response size.
-
-3. **Payload size accounts for most of the gap, and `nettcp`'s 2nd place is partly borrowed.**
+1. **Payload size accounts for most of the differences in performance.**
    Measured response bytes are in [Service methods](#service-methods): at 1,000 orders protobuf
-   carries 264 KB, net.tcp binary XML 324 KB, and either SOAP transport 1.15 MB. Multiplying payload
-   by measured throughput at `-c 20` gives the rate at which each transport actually moves
-   data:
-
-   | Transport | req/s @ c=20 | Payload | Payload moved |
-   |---|---|---|---|
-   | `grpc` | 4,682 | 263,626 B | **1.23 GB/s** |
-   | `nettcp` | 1,817 | 323,785 B | 0.59 GB/s |
-   | `basichttp` | 994 | 1,154,714 B | **1.15 GB/s** |
-   | `wshttp` | 770 | 1,154,948 B | 0.89 GB/s |
-
-   Two things fall out. gRPC wins on *both* axes, which the req/s table alone does not show. And
-   `basichttp` moves **twice as many bytes per second as `nettcp`** despite being a little over half
-   its throughput - its 4.4x larger payload is very nearly cancelled by a much faster serializer,
-   while net.tcp's compact binary XML does not buy it a faster encoder. `nettcp`'s 2nd place is
-   therefore partly a smaller payload rather than purely a faster stack.
-
-4. **gRPC is the only transport that loses throughput as concurrency rises.** It peaks at `-c 10`
+   is at 264 KB, net.tcp binary XML 324 KB, and either SOAP transport 1.15 MB.  
+ 
+2. **gRPC is the only transport that loses throughput as concurrency rises.** It peaks at concurrency `-c 10`
    with 4,694 req/s and decays 7% to 4,350 by `-c 100`, while the three WCF transports hold a flat
-   plateau over the same range, all ending above their own c=20 value: `nettcp` 1,817 -> 1,934,
-   `basichttp` 994 -> 1,020, `wshttp` 770 -> 816. Past about 10 workers every response is
-   large enough that the server's serializer, not the queue, is the ceiling - extra concurrency only
-   deepens the backlog.
+   plateau over the same range,
 
-5. **gRPC has the best tail latency at every level.** At `-c 100` its p99 is 60.6 ms against
-   `nettcp`'s 137.3, `basichttp`'s 225.4 and `wshttp`'s 254.9. Its `max` never exceeds 137.2 ms
-   anywhere in the sweep, while `nettcp` reaches 406.6 ms, `basichttp` 413.0 ms and `wshttp` 424.0 ms.
+3. **gRPC has the lowest (lower is better) tail latency at every level.** At `-c 100` its p99 is 60.6 ms against
+   `nettcp`'s 137.3, `basichttp`'s 225.4 and `wshttp`'s 254.9.
 
 
 ### Batch-size sweep
@@ -325,34 +231,16 @@ gRPC throughput divided by `nettcp` throughput, at every batch size and concurre
 
 ### Batch-size findings
 
-1. **The ranking never changes.** gRPC is first, `nettcp` second, `basichttp` third and `wshttp` last at every one
-   of the 35 (batch size, concurrency) combinations measured - 140 runs, no exceptions. What a bigger
-   batch changes is *how much* gRPC wins by, not who wins.
+1. **The ranking doesnt change.** `gRPC` is first, `nettcp` second, `basichttp` third and `wshttp` last. The larger the batch size,
+   the more gRPC wins by, while `nettcp` stays in second place.
 
-2. **gRPC's margin over `nettcp` grows with the batch.** At `-c 1` the ratio goes 1.65x at n=100 to 2.10x
-   at n=1,000; at `-c 20` it goes 1.79x to 2.58x. This is the same mechanism as the single-order result
-   running the other way: the larger the response, the less of the cost is per-call overhead and the
-   more of it is serialization and framing - where protobuf over HTTP/2 wins.
-
-3. **The crossover with `nettcp` is below 100 orders.** gRPC is already ahead at the smallest batch
-   measured - 1.65x at `-c 1`, n=100 - so the point where it overtakes `nettcp` on a batch is not in the
-   range swept. On a single order `nettcp` leads by 27%, so the crossover sits somewhere between one order
-   and 100 orders. Pinning it down needs a sweep at smaller batch sizes, not an interpolation.
-
-4. **gRPC has the best p99 at every batch size and every concurrency level** - 35 checks, no
-   exceptions. Its tail-latency advantage also widens with the batch: at `-c 100` its p99 is 6.8 ms
-   against `nettcp`'s 10.3 at n=100 - 1.5x better - but 60.6 ms against 137.3 at n=1,000, 2.3x better.
-
-5. **gRPC's plateau turns into a decline once the batch is large enough.** Its throughput from `-c 20`
-   to `-c 100` is -0.4% at n=100, -5.1% at n=300, -12.3% at n=500, -9.6% at n=700, -7.1% at n=1,000 - flat
-   at n=100, declining at every batch size above it. `nettcp` over the same span is -0.5% at n=100, +3.5%
-   at n=300, +1.8% at n=500, +1.3% at n=700, +6.4% at n=1,000: flat to slightly rising at every size.
-   Once the response is big enough, gRPC's serializer is the ceiling rather than the queue, and extra
-   workers only deepen the backlog.
+2. **gRPC's margin over `nettcp` grows with the batch size.**
+ 
+3. **gRPC has the best p99 at every batch size and every concurrency level**
 
 ### Batch-size raw data
 
-Throughput in calls/s; each call returns n orders, so multiply by n for orders/s.
+Throughput in req/s; each call returns n orders, so multiply by n for orders/s.
 
 **100 orders per call**
 
@@ -402,48 +290,7 @@ Throughput in calls/s; each call returns n orders, so multiply by n for orders/s
 | 80 | 3,308 | **7,160** | 1,609 | 1,294 |
 | 100 | 3,314 | **7,101** | 1,584 | 1,293 |
 
-### Larger batch: 10,000 orders per call
-
-This sweep is **not published any more**. It was measured on a workstation-GC client, and the
-configuration it was measured under is no longer the configuration in this repository - both projects
-now set `<ServerGarbageCollection>true</ServerGarbageCollection>`. Under Server GC every transport
-completes the full sweep, so the `n/a` cells that made that table interesting no longer describe
-anything real. Re-run it to regenerate:
-
-```bash
-./Bench.Client/bin/Release/net10.0/Bench.Client -target grpc -op getorders -w 10 -d 60 -c 20
-```
-
-For a full matrix at a given batch size, use `tools/batch-sweep.sh`; the
-[batch-size sweep](#batch-size-sweep) above is that tooling applied to 100, 300, 500, 700 and
-1,000 orders.
-
-The 10,000-order response is 2.52 MB over protobuf, 3.09 MB over `nettcp` and 11.03 MB over either
-SOAP transport, so `MaxBufferSize` has to stay well clear of the 64 KB default - see
-[Notes on the harness](#notes-on-the-harness).
-
-## Notes on the harness
-
-Three changes were made while benchmarking. Each one invalidates results measured before it, which is
-why the numbers here are not comparable with any earlier version of this table.
-
-1. **Server GC on both processes.** `Bench.Server` and `Bench.Client` both set
-   `<ServerGarbageCollection>true</ServerGarbageCollection>` explicitly. Neither uses
-   `Microsoft.NET.Sdk.Web`, which is what normally turns Server GC on, so it has to be requested.
-   Results measured before this change are not comparable with the ones published here.
-2. **The client sizes the thread pool from `-c` before starting the workers**
-   (`Harness.EnsureThreadPoolCapacity`, floor of `concurrency + ProcessorCount`). Each worker holds a
-   pool thread across the synchronous part of its call and the pool's hill-climbing injector adds only
-   about one thread per 500 ms, so at `-c 100` the harness was measuring the injector: a 62-second p95
-   and a 60-second run reporting 84 seconds elapsed. `GetOrderById` is unaffected, since a 0.1 ms call
-   never holds a thread long enough to matter.
-3. **The net.tcp binding raises `MaxBufferSize` to 16 MB.** The 64 KB default caps the session's
-   *send* path as well as its receive path, so a 1,000-order response (324 KB) fails deterministically
-   with `CommunicationException: The server did not provide a meaningful reply`. 64 KB is enough for
-   `GetOrderById`, which is why this only ever showed up on the batch operation. The 16 MB bound is
-   chosen to clear the 3.09 MB `nettcp` response at 10,000 orders with headroom, while staying bounded.
-
-## Running
+# Running
 
 Build in Release mode
 
@@ -484,46 +331,7 @@ Bench.Client -target wcf -arg nettcp -address "net.tcp://localhost:5002/Northwin
 `-op` selects the operation and defaults to `getorderbyid`, so every command in the results
 table above still behaves exactly as it did. `-n` sets the batch size and is only accepted
 alongside `-op getorders`.
-
-## Regenerating the chart
-
-The chart in [Results](#results) is generated from the same TSV the tables are built from, so
-the image cannot drift from the measured data:
-
-```bash
-python3 tools/gen-chart.py <results.tsv> --html /tmp/chart.html --png docs/getorderbyid.png
-python3 tools/gen-chart.py <results.tsv> --orders 1,000 --html /tmp/chart.html --png docs/getorders.png
-python3 tools/gen-sweep-chart.py 100=<tsv> 300=<tsv> ... --png docs/batch-sweep.png
-```
-
-The TSV is tab separated, one row per run, with the columns
-`op transport conc success failed elapsed_s throughput min_ms mean_ms p50_ms p90_ms p95_ms p99_ms max_ms`.
-The script reads every number it plots out of that file, so nothing in the chart is typed by hand.
-
-## Verifying the published numbers
-
-Every figure and every numeric claim in the findings sections is re-derived from the measured TSVs
-by the scripts in `tools/`. Nothing in this README is transcribed by hand:
-
-```bash
-python3 tools/mk-table.py throughput <results.tsv>   # render a table from a TSV
-python3 tools/verify_readme.py <ob.tsv> <go.tsv>     # re-derive every published figure
-python3 tools/verify_prose.py  <ob.tsv> <go.tsv>     # recompute every numeric claim in the findings
-python3 tools/verify_payload.py                      # check the payload figures
-python3 tools/verify-chart.py <chart.html> <tsv>     # check a chart against the TSV it was built from
-python3 tools/verify-sweep.py <chart.html> <n>=<tsv> ...   # same, for the batch-size sweep chart
-```
-
-`verify_readme.py` and `verify_prose.py` take the `GetOrderById` TSV first and the `GetOrders` TSV
-second; pass only the first to check the single-order section on its own. `verify_payload.py` checks
-the measured byte counts in `tools/payload.json` against both this document and the `GetOrders`
-table they are quoted next to.
-
-The benchmark matrices are run by `tools/bench.sh` (one matrix per order count) and
-`tools/batch-sweep.sh` (several in sequence). The batch sweep runs its matrices one after another on
-purpose: every run restarts the server on the same ports, so two matrices at once would clobber each
-other's server.
-
+  
 
 ## Regenerating the WCF client
 
