@@ -307,6 +307,101 @@ Throughput in calls/s; each call returns 1,000 orders, so multiply by 1,000 for 
    anywhere in the sweep, while `nettcp` reaches 406.6 ms, `basichttp` 413.0 ms and `wshttp` 424.0 ms.
 
 
+### Batch-size sweep
+
+`GetOrders` was re-run at four more batch sizes - 100, 300, 500, 700 orders per call - each the same 28-run sweep as the 1,000-order results above. Across the five batch sizes that is **140 runs, 53,067,893 calls and zero failures**.
+
+![Batch-size sweep: the gRPC / nettcp throughput ratio against batch size](./docs/batch-sweep.png)
+
+gRPC throughput divided by `nettcp` throughput, at every batch size and concurrency level:
+
+| Batch size | c=1 | c=10 | c=20 | c=40 | c=60 | c=80 | c=100 |
+|---|---|---|---|---|---|---|---|
+| 100 | 1.65x | 1.77x | 1.79x | 1.78x | 1.77x | 1.82x | 1.80x |
+| 300 | 1.73x | 2.11x | 2.23x | 2.24x | 2.17x | 2.29x | 2.04x |
+| 500 | 1.78x | 2.36x | 2.38x | 2.28x | 2.16x | 2.08x | 2.05x |
+| 700 | 1.95x | 2.34x | 2.40x | 2.21x | 2.20x | 2.16x | 2.14x |
+| 1,000 | 2.10x | 2.70x | 2.58x | 2.49x | 2.38x | 2.29x | 2.25x |
+
+### Batch-size findings
+
+1. **The ranking never changes.** gRPC is first, `nettcp` second, `basichttp` third and `wshttp` last at every one
+   of the 35 (batch size, concurrency) combinations measured - 140 runs, no exceptions. What a bigger
+   batch changes is *how much* gRPC wins by, not who wins.
+
+2. **gRPC's margin over `nettcp` grows with the batch.** At `-c 1` the ratio goes 1.65x at n=100 to 2.10x
+   at n=1,000; at `-c 20` it goes 1.79x to 2.58x. This is the same mechanism as the single-order result
+   running the other way: the larger the response, the less of the cost is per-call overhead and the
+   more of it is serialization and framing - where protobuf over HTTP/2 wins.
+
+3. **The crossover with `nettcp` is below 100 orders.** gRPC is already ahead at the smallest batch
+   measured - 1.65x at `-c 1`, n=100 - so the point where it overtakes `nettcp` on a batch is not in the
+   range swept. On a single order `nettcp` leads by 27%, so the crossover sits somewhere between one order
+   and 100 orders. Pinning it down needs a sweep at smaller batch sizes, not an interpolation.
+
+4. **gRPC has the best p99 at every batch size and every concurrency level** - 35 checks, no
+   exceptions. Its tail-latency advantage also widens with the batch: at `-c 100` its p99 is 6.8 ms
+   against `nettcp`'s 10.3 at n=100 - 1.5x better - but 60.6 ms against 137.3 at n=1,000, 2.3x better.
+
+5. **gRPC's plateau turns into a decline once the batch is large enough.** Its throughput from `-c 20`
+   to `-c 100` is -0.4% at n=100, -5.1% at n=300, -12.3% at n=500, -9.6% at n=700, -7.1% at n=1,000 - flat
+   at n=100, declining at every batch size above it. `nettcp` over the same span is -0.5% at n=100, +3.5%
+   at n=300, +1.8% at n=500, +1.3% at n=700, +6.4% at n=1,000: flat to slightly rising at every size.
+   Once the response is big enough, gRPC's serializer is the ceiling rather than the queue, and extra
+   workers only deepen the backlog.
+
+### Batch-size raw data
+
+Throughput in calls/s; each call returns n orders, so multiply by n for orders/s.
+
+**100 orders per call**
+
+| Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
+|---|---|---|---|---|
+| 1 | 3,825 | **6,327** | 2,009 | 1,808 |
+| 10 | 19,310 | **34,262** | 8,154 | 6,736 |
+| 20 | 21,607 | **38,759** | 9,399 | 7,838 |
+| 40 | 21,223 | **37,766** | 9,327 | 8,046 |
+| 60 | 20,993 | **37,205** | 9,332 | 8,103 |
+| 80 | 21,599 | **39,246** | 9,742 | 8,116 |
+| 100 | 21,496 | **38,593** | 9,652 | 7,327 |
+
+**300 orders per call**
+
+| Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
+|---|---|---|---|---|
+| 1 | 1,428 | **2,471** | 753 | 703 |
+| 10 | 6,780 | **14,331** | 2,981 | 2,470 |
+| 20 | 6,834 | **15,252** | 3,162 | 2,598 |
+| 40 | 7,035 | **15,749** | 3,300 | 2,674 |
+| 60 | 7,119 | **15,446** | 3,346 | 2,675 |
+| 80 | 6,686 | **15,295** | 3,161 | 2,617 |
+| 100 | 7,076 | **14,468** | 3,416 | 2,721 |
+
+**500 orders per call**
+
+| Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
+|---|---|---|---|---|
+| 1 | 965 | **1,722** | 471 | 429 |
+| 10 | 4,045 | **9,528** | 1,936 | 1,583 |
+| 20 | 4,365 | **10,368** | 2,061 | 1,649 |
+| 40 | 4,356 | **9,933** | 2,090 | 1,677 |
+| 60 | 4,473 | **9,659** | 2,125 | 1,705 |
+| 80 | 4,419 | **9,203** | 2,125 | 1,719 |
+| 100 | 4,445 | **9,095** | 2,122 | 1,721 |
+
+**700 orders per call**
+
+| Concurrency | `nettcp` | `grpc` | `basichttp` | `wshttp` |
+|---|---|---|---|---|
+| 1 | 661 | **1,286** | 343 | 317 |
+| 10 | 3,073 | **7,176** | 1,471 | 1,210 |
+| 20 | 3,272 | **7,852** | 1,582 | 1,266 |
+| 40 | 3,308 | **7,317** | 1,584 | 1,284 |
+| 60 | 3,292 | **7,229** | 1,599 | 1,292 |
+| 80 | 3,308 | **7,160** | 1,609 | 1,294 |
+| 100 | 3,314 | **7,101** | 1,584 | 1,293 |
+
 ### Larger batch: 10,000 orders per call
 
 This sweep is **not published any more**. It was measured on a workstation-GC client, and the
@@ -318,6 +413,10 @@ anything real. Re-run it to regenerate:
 ```bash
 ./Bench.Client/bin/Release/net10.0/Bench.Client -target grpc -op getorders -w 10 -d 60 -c 20
 ```
+
+For a full matrix at a given batch size, use `tools/batch-sweep.sh`; the
+[batch-size sweep](#batch-size-sweep) above is that tooling applied to 100, 300, 500, 700 and
+1,000 orders.
 
 The 10,000-order response is 2.52 MB over protobuf, 3.09 MB over `nettcp` and 11.03 MB over either
 SOAP transport, so `MaxBufferSize` has to stay well clear of the 64 KB default - see
@@ -394,6 +493,7 @@ the image cannot drift from the measured data:
 ```bash
 python3 tools/gen-chart.py <results.tsv> --html /tmp/chart.html --png docs/getorderbyid.png
 python3 tools/gen-chart.py <results.tsv> --orders 1,000 --html /tmp/chart.html --png docs/getorders.png
+python3 tools/gen-sweep-chart.py 100=<tsv> 300=<tsv> ... --png docs/batch-sweep.png
 ```
 
 The TSV is tab separated, one row per run, with the columns
@@ -411,12 +511,18 @@ python3 tools/verify_readme.py <ob.tsv> <go.tsv>     # re-derive every published
 python3 tools/verify_prose.py  <ob.tsv> <go.tsv>     # recompute every numeric claim in the findings
 python3 tools/verify_payload.py                      # check the payload figures
 python3 tools/verify-chart.py <chart.html> <tsv>     # check a chart against the TSV it was built from
+python3 tools/verify-sweep.py <chart.html> <n>=<tsv> ...   # same, for the batch-size sweep chart
 ```
 
 `verify_readme.py` and `verify_prose.py` take the `GetOrderById` TSV first and the `GetOrders` TSV
 second; pass only the first to check the single-order section on its own. `verify_payload.py` checks
 the measured byte counts in `tools/payload.json` against both this document and the `GetOrders`
 table they are quoted next to.
+
+The benchmark matrices are run by `tools/bench.sh` (one matrix per order count) and
+`tools/batch-sweep.sh` (several in sequence). The batch sweep runs its matrices one after another on
+purpose: every run restarts the server on the same ports, so two matrices at once would clobber each
+other's server.
 
 
 ## Regenerating the WCF client
