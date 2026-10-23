@@ -11,10 +11,15 @@ This benchmark was done as a fun exercise. Please be aware of the following cave
 - The duration of the benchmark is just 60 sec `-d 60` (with a 10 sec warmup time `-w 10`)
 - **Both processes run Server GC**, set explicitly in each csproj.
 - The WCF net.tcp endpoint needs `MaxBufferSize` raised well above the 64 KB default or the batch
-  operation fails outright. See [Notes on the harness](#notes-on-the-harness).
+  operation fails outright.
 
 > Since this test was done on a single machine, and since WCF and gRPC are both built on top ASP.NET Core,
 > the performance differences below are likely due protobuf (grpc), binary xml (nettcp), and SOAP xml serialization.
+
+
+**Results in two sentences.** On the single-order call i.e. very small payload, `nettcp` wins at every concurrency level 
+over grpc but by only 3-4%. On the batch call, the ranking inverts - gRPC wins at every concurrency level by
+2-3x over `nettcp`, and the margin grows with the batch size
 
 ## Transports compared
 
@@ -128,12 +133,13 @@ Throughput and p99 tail latency at each concurrency level
 
 ### Findings (take this with huge grain of salt)
 
-1. **Perf ranking: `nettcp` > `grpc` > `basichttp` > `wshttp`** at every concurrency level. `nettcp`
+1. **Perf ranking: `nettcp` > `grpc` > `basichttp` > `wshttp`** at every concurrency level except
+   `-c 1`, where `basichttp` (19,775) edges out `grpc` (17,501) by 13%. `nettcp`
    wins over `basichttp` and `wshttp` as expected - binary over raw TCP beats SOAP/XML over http. It
    also wins over `grpc` but not by much.
 2. **Throughput rises steeply to `-c 10` and then plateaus.** 
 3. **Latency grows roughly linearly with concurrency while throughput flattens.**
-4. **`wshttp` is consistently last** on both throughput and latency at every level**
+4. **`wshttp` is consistently last** on both throughput and latency at every level
 
 ### Concurrency (important)
 
